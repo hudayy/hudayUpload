@@ -93,8 +93,6 @@ class Application:
             self._win.set_rl_status(None, "Waiting for Rocket League…")
         elif t == "game_ended":
             self._win.set_statusbar("Game ended — waiting for replay to save…")
-        elif t == "replay_created":
-            self._win.set_statusbar("Replay saved — uploading…")
             self._last_replay_trigger = time.monotonic()
             if self.config.auto_upload:
                 threading.Thread(

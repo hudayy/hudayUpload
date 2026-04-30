@@ -15,8 +15,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_GAME_END_EVENTS = {"MatchEnded", "PodiumStart"}
-_REPLAY_CREATED_EVENT = "ReplayCreated"
+# Real event names sent by the RL Stats API (lowercase, game: prefix)
+_GAME_END_EVENTS = {"game:match_ended", "game:podium_start"}
 
 
 class StatsWatcher:
@@ -155,14 +155,11 @@ class StatsWatcher:
             except json.JSONDecodeError:
                 data = {}
 
-        logger.debug("RL event: %s", event)
+        logger.info("RL event: %s", event)
 
         if event in _GAME_END_EVENTS:
             logger.info("Game ended (event=%s)", event)
             self._post({"type": "game_ended", "event": event, "data": data})
-        elif event == _REPLAY_CREATED_EVENT:
-            logger.info("ReplayCreated: %s", data)
-            self._post({"type": "replay_created", "data": data})
 
     def _post(self, msg: dict) -> None:
         self.event_queue.put_nowait(msg)
