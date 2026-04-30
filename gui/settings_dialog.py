@@ -84,6 +84,22 @@ class SettingsDialog(tk.Toplevel):
             width=12,
         ).grid(row=3, column=1, sticky="w", pady=3)
 
+        # ── Epic Games section ───────────────────────────────────────────────
+        epic_frame = ttk.LabelFrame(self, text="Epic Games Account", padding=(10, 6, 10, 10))
+        epic_frame.pack(fill=tk.X, **pad)
+        epic_frame.columnconfigure(1, weight=1)
+
+        self._epic_status_lbl = ttk.Label(epic_frame, text="Not connected", foreground="#767676")
+        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        ttk.Button(
+            epic_frame, text="Connect Epic Account", command=self._connect_epic
+        ).grid(row=1, column=0, sticky="w")
+
+        ttk.Button(
+            epic_frame, text="Disconnect", command=self._disconnect_epic
+        ).grid(row=1, column=1, sticky="w", padx=(6, 0))
+
         # ── Rocket League section ────────────────────────────────────────────
         rl_frame = ttk.LabelFrame(
             self, text="Rocket League", padding=(10, 6, 10, 10)
@@ -180,6 +196,7 @@ class SettingsDialog(tk.Toplevel):
         self._auto_var.set(self.cfg.auto_upload)
         self._minimized_var.set(self.cfg.start_minimized)
         self._startup_var.set(self.cfg.launch_at_startup)
+        self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._refresh_ini_status()
@@ -329,6 +346,99 @@ class SettingsDialog(tk.Toplevel):
                 text="⚠ Stats API not enabled — click 'Configure Stats API automatically'.",
                 foreground="#CA5010",
             )
+
+    def _refresh_epic_status(self) -> None:
+        name = self.cfg.epic_display_name.strip()
+        if self.cfg.has_epic_auth and name:
+            self._epic_status_lbl.config(
+                text=f"Connected as {name}", foreground="#107C10"
+            )
+        elif self.cfg.has_epic_auth:
+            self._epic_status_lbl.config(
+                text="Connected (display name unknown)", foreground="#107C10"
+            )
+        else:
+            self._epic_status_lbl.config(text="Not connected", foreground="#767676")
+
+    def _connect_epic(self) -> None:
+        import webbrowser
+        from core.epic_auth import get_auth_url, EpicClient, EpicAuthError
+
+        # Open browser then show a small dialog asking for the code
+        webbrowser.open(get_auth_url())
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Connect Epic Account")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self)
+
+        ttk.Label(
+            dlg,
+            text=(
+                "Your browser has opened the Epic login page.\n\n"
+                "After logging in, the page will display a JSON block.\n"
+                "Copy the value of \"authorizationCode\" and paste it below."
+            ),
+            justify="left",
+            wraplength=340,
+            padding=(14, 10, 14, 6),
+        ).pack(fill=tk.X)
+
+        code_var = tk.StringVar()
+        ttk.Entry(dlg, textvariable=code_var, width=40).pack(padx=14, pady=(0, 6), fill=tk.X)
+
+        status_lbl = ttk.Label(dlg, text="", foreground="#767676", padding=(14, 0, 14, 4))
+        status_lbl.pack(fill=tk.X)
+
+        def _submit():
+            code = code_var.get().strip()
+            if not code:
+                status_lbl.config(text="Paste the auth code first.", foreground="#D13438")
+                return
+            status_lbl.config(text="Authenticating…", foreground="#767676")
+            dlg.update()
+
+            def _do():
+                try:
+                    client = EpicClient()
+                    data = client.login_with_code(code)
+                    def _ok():
+                        self.cfg.epic_refresh_token = data["refresh_token"]
+                        self.cfg.epic_account_id    = data["account_id"]
+                        self.cfg.epic_display_name  = data["display_name"]
+                        self.cfg.save()
+                        self._refresh_epic_status()
+                        dlg.destroy()
+                    dlg.after(0, _ok)
+                except EpicAuthError as exc:
+                    dlg.after(0, lambda: status_lbl.config(
+                        text=f"❌ {exc}", foreground="#D13438"
+                    ))
+                except Exception as exc:
+                    dlg.after(0, lambda: status_lbl.config(
+                        text=f"❌ Unexpected error: {exc}", foreground="#D13438"
+                    ))
+
+            threading.Thread(target=_do, daemon=True).start()
+
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+        ttk.Button(btn_row, text="Submit", command=_submit, width=10).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy, width=10).pack(side=tk.RIGHT)
+
+        dlg.update_idletasks()
+        px, py = self.winfo_x(), self.winfo_y()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        w, h = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+
+    def _disconnect_epic(self) -> None:
+        self.cfg.epic_refresh_token = ""
+        self.cfg.epic_account_id    = ""
+        self.cfg.epic_display_name  = ""
+        self.cfg.save()
+        self._refresh_epic_status()
 
     def _current_ini_path(self) -> Path | None:
         """Return the ini path, preferring the install dir over the docs dir."""

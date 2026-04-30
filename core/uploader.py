@@ -58,6 +58,31 @@ class BallchasingClient:
 
     # ── upload ────────────────────────────────────────────────────────────────
 
+    def upload_bytes(self, filename: str, data: bytes) -> UploadResult:
+        """Upload replay from in-memory bytes (downloaded from Epic API)."""
+        try:
+            r = self._session.post(
+                _BC_UPLOAD_URL,
+                params={"visibility": self.visibility},
+                files={"file": (filename, data, "application/octet-stream")},
+                timeout=60,
+            )
+            if r.status_code == 201:
+                body = r.json()
+                replay_id = body.get("id", "")
+                url = f"https://ballchasing.com/replay/{replay_id}"
+                logger.info("Uploaded %s → %s", filename, url)
+                return UploadResult(ok=True, replay_id=replay_id, url=url, filename=filename)
+            if r.status_code == 409:
+                logger.info("Duplicate replay %s — already on ballchasing", filename)
+                return UploadResult(ok=True, duplicate=True, filename=filename)
+            err = f"HTTP {r.status_code}: {r.text[:200]}"
+            logger.error("Upload failed for %s: %s", filename, err)
+            return UploadResult(ok=False, error=err, filename=filename)
+        except requests.RequestException as exc:
+            logger.error("Upload error for %s: %s", filename, exc)
+            return UploadResult(ok=False, error=str(exc), filename=filename)
+
     def upload(self, replay_path: Path) -> UploadResult:
         filename = replay_path.name
         try:

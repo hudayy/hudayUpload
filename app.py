@@ -4,18 +4,19 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from typing import Optional
 
 from core.config import Config
+from core.epic_auth import EpicAuthError, EpicClient
 from core.stats_watcher import StatsWatcher
-from core.uploader import BallchasingClient, UploadResult, find_newest_replay, find_all_unuploaded
+from core.uploader import BallchasingClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
-# How long to wait after ReplayCreated before looking for the file
-_REPLAY_WRITE_DELAY = 4.0
+# How long to wait after game:match_ended before hitting the Epic API.
+# The backend typically needs ~15–30 s to record the match and generate a replay URL.
+_POST_GAME_DELAY = 30.0
 
 
 class Application:
@@ -24,13 +25,14 @@ class Application:
         self.root: tk.Tk = root
         self.config = Config()
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
-        self._uploaded: set[str] = self.config.load_uploaded()
+        self._epic = EpicClient()
+        self._uploaded_guids: set[str] = self.config.load_uploaded_guids()
         self._uploading_lock = threading.Lock()
         self._win: Optional["MainWindow"] = None  # set after GUI is built
         self._tray = None
 
-        # Guard: don't double-upload within 10 s of a ReplayCreated event
-        self._last_replay_trigger: float = 0.0
+        # Prevent double-upload if two end events fire close together
+        self._last_game_end: float = 0.0
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -40,13 +42,12 @@ class Application:
 
         self._start_tray()  # must run first so self._tray is set
 
-        # Only hide to tray if the tray actually started; otherwise show normally
+        # Only hide to tray if the tray actually started
         if self.config.start_minimized and self._tray is not None:
             self.root.withdraw()
 
         self._watcher.start()
         self._start_event_pump()
-        self._start_background_scan()
         self._verify_bc_token_async()
 
     def quit(self) -> None:
@@ -58,18 +59,26 @@ class Application:
     # ── public API (called by GUI) ────────────────────────────────────────────
 
     def trigger_manual_upload(self) -> None:
+        """Immediately fetch latest unuploaded match from Epic and upload."""
+        if not self.config.has_epic_auth:
+            self.root.after(0, self._win.set_statusbar,
+                            "Not logged in to Epic — open ⚙ Settings to connect.")
+            return
+        if not self.config.has_bc_token:
+            self.root.after(0, self._win.set_statusbar,
+                            "No Ballchasing token — open ⚙ Settings.")
+            return
         threading.Thread(
-            target=self._upload_newest, args=(None,), daemon=True, name="manual-upload"
+            target=self._run_epic_upload, args=(0.0,), daemon=True, name="manual-upload"
         ).start()
 
     def on_settings_changed(self) -> None:
-        # Restart watcher if port changed
         self._watcher.stop()
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
         self._watcher.start()
         self._verify_bc_token_async()
 
-    # ── event pump (polls watcher queue every 100 ms on main thread) ──────────
+    # ── event pump ───────────────────────────────────────────────────────────
 
     def _start_event_pump(self) -> None:
         self.root.after(100, self._pump)
@@ -77,8 +86,7 @@ class Application:
     def _pump(self) -> None:
         q = self._watcher.event_queue
         while not q.empty():
-            msg = q.get_nowait()
-            self._handle_watcher_event(msg)
+            self._handle_watcher_event(q.get_nowait())
         self.root.after(100, self._pump)
 
     def _handle_watcher_event(self, msg: dict) -> None:
@@ -92,45 +100,95 @@ class Application:
         elif t == "connecting":
             self._win.set_rl_status(None, "Waiting for Rocket League…")
         elif t == "game_ended":
-            self._win.set_statusbar("Game ended — waiting for replay to save…")
-            self._last_replay_trigger = time.monotonic()
+            now = time.monotonic()
+            if now - self._last_game_end < 60:
+                return  # debounce — ignore if already triggered within 60 s
+            self._last_game_end = now
+            self._win.set_statusbar(
+                f"Game ended — fetching replay in {int(_POST_GAME_DELAY)} s…"
+            )
             if self.config.auto_upload:
                 threading.Thread(
-                    target=self._upload_after_delay,
-                    args=(msg.get("data", {}),),
+                    target=self._run_epic_upload,
+                    args=(_POST_GAME_DELAY,),
                     daemon=True,
                     name="auto-upload",
                 ).start()
 
-    # ── upload logic ─────────────────────────────────────────────────────────
+    # ── Epic upload ───────────────────────────────────────────────────────────
 
-    def _upload_after_delay(self, event_data: dict) -> None:
-        time.sleep(_REPLAY_WRITE_DELAY)
-        self._upload_newest(event_data)
+    def _run_epic_upload(self, delay: float) -> None:
+        """Wait `delay` seconds, then fetch + download + upload via Epic API."""
+        if delay > 0:
+            time.sleep(delay)
 
-    def _upload_newest(self, event_data: Optional[dict]) -> None:
         with self._uploading_lock:
             if not self.config.has_bc_token:
                 self.root.after(0, self._win.set_statusbar,
                                 "No Ballchasing token — open ⚙ Settings.")
                 return
-
-            demos_dir = Path(self.config.replays_path)
-            replay = find_newest_replay(demos_dir, self._uploaded, max_age_seconds=180)
-            if replay is None:
+            if not self.config.has_epic_auth:
                 self.root.after(0, self._win.set_statusbar,
-                                "No new replay found in the last 3 minutes.")
+                                "Not logged in to Epic — open ⚙ Settings to connect.")
                 return
 
-            self.root.after(0, self._win.set_statusbar,
-                            f"Uploading {replay.name}…")
+            self.root.after(0, self._win.set_statusbar, "Fetching match from Epic API…")
+
+            # Refresh EGS access token
+            try:
+                token_data = self._epic.refresh_login(self.config.epic_refresh_token)
+            except EpicAuthError as exc:
+                logger.error("Epic refresh failed: %s", exc)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Epic login expired — re-authenticate in Settings. ({exc})")
+                return
+
+            # Save refreshed tokens
+            self.config.epic_refresh_token = token_data["refresh_token"]
+            self.config.epic_account_id    = token_data["account_id"]
+            self.config.epic_display_name  = token_data["display_name"]
+            self.config.save()
+
+            # Fetch latest unuploaded match
+            try:
+                entry = self._epic.get_latest_unuploaded(
+                    access_token  = token_data["access_token"],
+                    account_id    = token_data["account_id"],
+                    display_name  = token_data["display_name"],
+                    uploaded_guids= self._uploaded_guids,
+                )
+            except EpicAuthError as exc:
+                logger.error("GetMatchHistory failed: %s", exc)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Epic API error: {exc}")
+                return
+
+            if entry is None:
+                self.root.after(0, self._win.set_statusbar,
+                                "No new match found in Epic history yet — try Upload Now later.")
+                return
+
+            guid       = entry["match_guid"]
+            replay_url = entry["replay_url"]
+            filename   = f"{guid}.replay"
+
+            self.root.after(0, self._win.set_statusbar, f"Downloading replay {filename}…")
+            try:
+                data = self._epic.download_replay(replay_url)
+            except EpicAuthError as exc:
+                logger.error("Replay download failed: %s", exc)
+                self.root.after(0, self._win.set_statusbar, f"Download failed: {exc}")
+                return
+
+            self.root.after(0, self._win.set_statusbar, f"Uploading {filename} to ballchasing…")
             client = BallchasingClient(
                 self.config.ballchasing_token,
                 self.config.ballchasing_visibility,
             )
-            result = client.upload(replay)
-            self._uploaded.add(replay.name)
-            self.config.add_uploaded(replay.name)
+            result = client.upload_bytes(filename, data)
+
+            self._uploaded_guids.add(guid)
+            self.config.add_uploaded_guid(guid)
             self.root.after(0, self._on_upload_done, result)
 
     def _on_upload_done(self, result: UploadResult) -> None:
@@ -150,40 +208,6 @@ class Application:
             error=result.error,
         )
 
-    # ── background scan (catches replays missed by Stats API) ─────────────────
-
-    def _start_background_scan(self) -> None:
-        """Scan every 5 minutes for replays that slipped past the event stream."""
-        def _scan_loop():
-            while True:
-                time.sleep(300)
-                try:
-                    self._background_scan()
-                except Exception as exc:
-                    logger.debug("Background scan error: %s", exc)
-
-        threading.Thread(target=_scan_loop, daemon=True, name="bg-scan").start()
-
-    def _background_scan(self) -> None:
-        if not self.config.auto_upload or not self.config.has_bc_token:
-            return
-        # Only run if we haven't just uploaded from an event (avoid double upload)
-        if time.monotonic() - self._last_replay_trigger < 30:
-            return
-        demos_dir = Path(self.config.replays_path)
-        missed = find_all_unuploaded(demos_dir, self._uploaded)
-        for replay in missed[:5]:  # cap at 5 per cycle
-            logger.info("Background scan: uploading missed replay %s", replay.name)
-            with self._uploading_lock:
-                client = BallchasingClient(
-                    self.config.ballchasing_token,
-                    self.config.ballchasing_visibility,
-                )
-                result = client.upload(replay)
-                self._uploaded.add(replay.name)
-                self.config.add_uploaded(replay.name)
-                self.root.after(0, self._on_upload_done, result)
-
     # ── ballchasing auth check ────────────────────────────────────────────────
 
     def _verify_bc_token_async(self) -> None:
@@ -199,8 +223,7 @@ class Application:
                 self.root.after(0, self._win.set_bc_status, True,
                                 f"Authenticated as {info}" if info else "Authenticated")
             else:
-                self.root.after(0, self._win.set_bc_status, False,
-                                f"Token error: {info}")
+                self.root.after(0, self._win.set_bc_status, False, f"Token error: {info}")
 
         threading.Thread(target=_check, daemon=True, name="bc-verify").start()
 
@@ -217,9 +240,7 @@ class Application:
             menu = pystray.Menu(
                 pystray.MenuItem("Open", self._tray_open, default=True),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Upload Now", lambda: threading.Thread(
-                    target=self._upload_newest, args=(None,), daemon=True
-                ).start()),
+                pystray.MenuItem("Upload Now", lambda: self.trigger_manual_upload()),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Exit", lambda: self.root.after(0, self.quit)),
             )
@@ -238,5 +259,3 @@ class Application:
 
     def _tray_open(self) -> None:
         self.root.after(0, self._win.show)
-
-

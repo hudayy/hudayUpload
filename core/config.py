@@ -7,7 +7,8 @@ from pathlib import Path
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 CONFIG_DIR = APPDATA / "RLReplayUploader"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-UPLOADED_FILE = CONFIG_DIR / "uploaded.txt"
+UPLOADED_FILE = CONFIG_DIR / "uploaded.txt"          # legacy filename store
+UPLOADED_GUIDS_FILE = CONFIG_DIR / "uploaded_guids.txt"  # Epic match GUIDs
 
 _DEFAULTS = {
     "ballchasing_token": "",
@@ -18,6 +19,10 @@ _DEFAULTS = {
     "start_minimized": False,
     "launch_at_startup": False,
     "auto_upload": True,
+    # Epic Games auth (populated after user logs in)
+    "epic_refresh_token": "",
+    "epic_account_id": "",
+    "epic_display_name": "",
 }
 
 
@@ -69,10 +74,26 @@ class Config:
         with open(UPLOADED_FILE, "a", encoding="utf-8") as f:
             f.write(name + "\n")
 
+    # ── Epic match GUID tracking ──────────────────────────────────────────
+    def load_uploaded_guids(self) -> set[str]:
+        try:
+            with open(UPLOADED_GUIDS_FILE, encoding="utf-8") as f:
+                return {line.strip() for line in f if line.strip()}
+        except FileNotFoundError:
+            return set()
+
+    def add_uploaded_guid(self, guid: str) -> None:
+        with open(UPLOADED_GUIDS_FILE, "a", encoding="utf-8") as f:
+            f.write(guid + "\n")
+
     # ── convenience ──────────────────────────────────────────────────────
     @property
     def has_bc_token(self) -> bool:
         return bool(self._data.get("ballchasing_token", "").strip())
+
+    @property
+    def has_epic_auth(self) -> bool:
+        return bool(self._data.get("epic_refresh_token", "").strip())
 
     def ini_path(self) -> Path | None:
         """Derive the ini path from the replays folder — both live under TAGame/.
