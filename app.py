@@ -14,9 +14,7 @@ from core.uploader import BallchasingClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
-# How long to wait after game:match_ended before hitting the Epic API.
-# The backend typically needs ~15–30 s to record the match and generate a replay URL.
-_POST_GAME_DELAY = 30.0
+_POST_GAME_DELAY = 0.0
 
 
 class Application:
@@ -104,9 +102,7 @@ class Application:
             if now - self._last_game_end < 60:
                 return  # debounce — ignore if already triggered within 60 s
             self._last_game_end = now
-            self._win.set_statusbar(
-                f"Game ended — fetching replay in {int(_POST_GAME_DELAY)} s…"
-            )
+            self._win.set_statusbar("Game ended — fetching replay…")
             if self.config.auto_upload:
                 threading.Thread(
                     target=self._run_epic_upload,

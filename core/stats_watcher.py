@@ -15,8 +15,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Real event names sent by the RL Stats API (lowercase, game: prefix)
-_GAME_END_EVENTS = {"game:match_ended", "game:podium_start"}
+_GAME_END_EVENTS = {"MatchEnded", "PodiumStart"}
 
 
 class StatsWatcher:
@@ -155,7 +154,8 @@ class StatsWatcher:
             except json.JSONDecodeError:
                 data = {}
 
-        logger.info("RL event: %s", event)
+        if event != "UpdateState":
+            logger.info("RL event: %s", event)
 
         if event in _GAME_END_EVENTS:
             logger.info("Game ended (event=%s)", event)

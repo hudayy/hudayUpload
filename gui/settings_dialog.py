@@ -361,11 +361,10 @@ class SettingsDialog(tk.Toplevel):
             self._epic_status_lbl.config(text="Not connected", foreground="#767676")
 
     def _connect_epic(self) -> None:
-        import webbrowser
-        from core.epic_auth import get_auth_url, EpicClient, EpicAuthError
+        from core.epic_auth import EpicClient, EpicAuthError
 
-        # Open browser then show a small dialog asking for the code
-        webbrowser.open(get_auth_url())
+        client = EpicClient()
+        client.open_auth_browser()
 
         dlg = tk.Toplevel(self)
         dlg.title("Connect Epic Account")
@@ -376,32 +375,45 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(
             dlg,
             text=(
-                "Your browser has opened the Epic login page.\n\n"
-                "After logging in, the page will display a JSON block.\n"
-                "Copy the value of \"authorizationCode\" and paste it below."
+                "A page opened in your browser.\n\n"
+                "Log in, then copy the code shown on the page —\n"
+                "this window will close automatically."
             ),
             justify="left",
-            wraplength=340,
-            padding=(14, 10, 14, 6),
+            wraplength=320,
+            padding=(14, 12, 14, 4),
         ).pack(fill=tk.X)
 
-        code_var = tk.StringVar()
-        ttk.Entry(dlg, textvariable=code_var, width=40).pack(padx=14, pady=(0, 6), fill=tk.X)
-
-        status_lbl = ttk.Label(dlg, text="", foreground="#767676", padding=(14, 0, 14, 4))
+        status_lbl = ttk.Label(
+            dlg, text="Watching clipboard for code…", foreground="#767676",
+            padding=(14, 0, 14, 8),
+        )
         status_lbl.pack(fill=tk.X)
 
-        def _submit():
-            code = code_var.get().strip()
-            if not code:
-                status_lbl.config(text="Paste the auth code first.", foreground="#D13438")
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(fill=tk.X, padx=14, pady=(0, 10))
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy, width=10).pack(side=tk.RIGHT)
+
+        dlg.update_idletasks()
+        px, py = self.winfo_x(), self.winfo_y()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        w, h = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+
+        _cancelled = [False]
+        _seen_clips: set = set()
+
+        def _try_code(code: str) -> None:
+            code = code.strip()
+            if not code or code in _seen_clips:
                 return
-            status_lbl.config(text="Authenticating…", foreground="#767676")
-            dlg.update()
+            _seen_clips.add(code)
+            dlg.after(0, lambda: status_lbl.config(
+                text="Code detected — connecting…", foreground="#767676"
+            ))
 
             def _do():
                 try:
-                    client = EpicClient()
                     data = client.login_with_code(code)
                     def _ok():
                         self.cfg.epic_refresh_token = data["refresh_token"]
@@ -412,26 +424,35 @@ class SettingsDialog(tk.Toplevel):
                         dlg.destroy()
                     dlg.after(0, _ok)
                 except EpicAuthError as exc:
+                    _seen_clips.discard(code)  # allow retry with same code
                     dlg.after(0, lambda: status_lbl.config(
                         text=f"❌ {exc}", foreground="#D13438"
                     ))
                 except Exception as exc:
+                    _seen_clips.discard(code)
                     dlg.after(0, lambda: status_lbl.config(
                         text=f"❌ Unexpected error: {exc}", foreground="#D13438"
                     ))
 
             threading.Thread(target=_do, daemon=True).start()
 
-        btn_row = ttk.Frame(dlg)
-        btn_row.pack(fill=tk.X, padx=14, pady=(0, 10))
-        ttk.Button(btn_row, text="Submit", command=_submit, width=10).pack(side=tk.RIGHT, padx=(4, 0))
-        ttk.Button(btn_row, text="Cancel", command=dlg.destroy, width=10).pack(side=tk.RIGHT)
+        def _poll_clipboard():
+            if _cancelled[0] or not dlg.winfo_exists():
+                return
+            try:
+                clip = dlg.clipboard_get()
+                if clip and len(clip) <= 64 and clip.replace("-", "").isalnum():
+                    _try_code(clip)
+            except Exception:
+                pass
+            dlg.after(500, _poll_clipboard)
 
-        dlg.update_idletasks()
-        px, py = self.winfo_x(), self.winfo_y()
-        pw, ph = self.winfo_width(), self.winfo_height()
-        w, h = dlg.winfo_width(), dlg.winfo_height()
-        dlg.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+        def _on_close():
+            _cancelled[0] = True
+            dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", _on_close)
+        dlg.after(500, _poll_clipboard)
 
     def _disconnect_epic(self) -> None:
         self.cfg.epic_refresh_token = ""

@@ -1,12 +1,19 @@
 """Epic Games Store / PsyNet authentication and match history retrieval.
 
-Auth flow (mirrors github.com/Amzd/upload-match-history-to-ballchasing):
-  1. User visits EGS auth URL, copies the authorizationCode from the redirect page.
-  2. App POSTs code → EGS OAuth → access_token + refresh_token.
-  3. App GETs exchange code from EGS, then POSTs it to EOS → eos_access_token.
-  4. App POSTs AuthPlayer/v2 to PsyNet (HTTP, HMAC-signed) → WebSocket URL + PsyToken.
-  5. App connects via WebSocket and calls GetMatchHistory v1.
-  6. App downloads ReplayUrl, uploads bytes to ballchasing.
+Auth flow:
+  1. Browser opens Epic authorize URL (internal EGS client).
+  2. User copies the authorization code shown on the page.
+  3. App exchanges code → EGS access_token.
+  4. App GETs exchange code, POSTs it to EOS → eos_access_token (RL deployment).
+  5. App POSTs AuthPlayer/v2 to PsyNet (HMAC-signed) → WebSocket URL + PsyToken.
+  6. App connects via WebSocket and calls GetMatchHistory v1.
+  7. App downloads ReplayUrl, uploads bytes to ballchasing.
+
+NOTE: The internal EGS client is required because only it has the
+`account:oauth:exchangeTokenCode CREATE` permission that bridges EGS → EOS.
+That client does not support redirect URIs, so a redirect-based flow cannot
+be used. The settings dialog compensates with clipboard monitoring so the
+user only needs to copy the code — no manual paste step required.
 
 Refresh tokens are saved to config so the user only logs in once.
 """
@@ -22,10 +29,12 @@ import uuid
 from typing import Optional
 
 import requests
+import websocket as _websocket
 
 logger = logging.getLogger(__name__)
 
 # ── EGS constants ──────────────────────────────────────────────────────────────
+# Internal EGS launcher client — the only one with exchangeTokenCode permission.
 _EGS_CLIENT_ID     = "34a02cf8f4414e29b15921876da36f9a"
 _EGS_CLIENT_SECRET = "daafbccc737745039dffe53d94fc76cf"
 _EGS_OAUTH_BASE    = "https://account-public-service-prod03.ol.epicgames.com/account/api/oauth"
@@ -46,7 +55,7 @@ _PSY_WS_AGENT     = f"RL Win/{_PSY_GAME_VER} gzip"
 
 
 def get_auth_url() -> str:
-    """URL the user must visit to obtain an authorization code."""
+    """Epic login URL — redirects to the clean 'Copy Code' page after sign-in."""
     from urllib.parse import quote
     redirect = (
         f"https://www.epicgames.com/id/api/redirect"
@@ -67,6 +76,11 @@ class EpicClient:
 
     # ── public ────────────────────────────────────────────────────────────────
 
+    def open_auth_browser(self) -> None:
+        """Open the Epic authorize page in the default browser."""
+        import webbrowser
+        webbrowser.open(get_auth_url())
+
     def login_with_code(self, auth_code: str) -> dict:
         """Exchange a one-time auth code for tokens.
 
@@ -74,16 +88,16 @@ class EpicClient:
         """
         return self._egs_token({
             "grant_type": "authorization_code",
-            "code": auth_code.strip(),
-            "token_type": "eg1",
+            "code":        auth_code.strip(),
+            "token_type":  "eg1",
         })
 
     def refresh_login(self, refresh_token: str) -> dict:
         """Get a fresh access token using a stored refresh token (same return shape)."""
         return self._egs_token({
-            "grant_type": "refresh_token",
+            "grant_type":    "refresh_token",
             "refresh_token": refresh_token,
-            "token_type": "eg1",
+            "token_type":    "eg1",
         })
 
     def get_latest_unuploaded(
@@ -235,9 +249,7 @@ class EpicClient:
         self, ws_url: str, psy_token: str, session_id: str, account_id: str
     ) -> list:
         """Connect via WebSocket and call GetMatchHistory v1."""
-        import websocket as _ws
-
-        ws = _ws.create_connection(
+        ws = _websocket.create_connection(
             ws_url,
             header=[
                 f"PsyBuildID: {_PSY_BUILD_ID}",
