@@ -14,7 +14,7 @@ from core.uploader import BallchasingClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
-_POST_GAME_DELAY = 0.0
+_POST_GAME_DELAY = 10.0
 
 
 class Application:
