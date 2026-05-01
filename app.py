@@ -230,7 +230,9 @@ class Application:
             import pystray
             from PIL import Image
 
-            icon_path = Path(__file__).resolve().parent / "assets" / "icon.png"
+            import sys
+            _base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+            icon_path = _base / "assets" / "icon.png"
             icon_img = Image.open(icon_path).resize((64, 64), Image.LANCZOS)
 
             menu = pystray.Menu(
