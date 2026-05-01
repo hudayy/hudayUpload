@@ -445,13 +445,15 @@ class SettingsDialog(tk.Toplevel):
                     dlg.after(0, _ok)
                 except EpicAuthError as exc:
                     _seen_clips.discard(code)  # allow retry with same code
-                    dlg.after(0, lambda: status_lbl.config(
-                        text=f"❌ {exc}", foreground="#D13438"
+                    msg = str(exc)
+                    dlg.after(0, lambda m=msg: status_lbl.config(
+                        text=f"❌ {m}", foreground="#D13438"
                     ))
                 except Exception as exc:
                     _seen_clips.discard(code)
-                    dlg.after(0, lambda: status_lbl.config(
-                        text=f"❌ Unexpected error: {exc}", foreground="#D13438"
+                    msg = str(exc)
+                    dlg.after(0, lambda m=msg: status_lbl.config(
+                        text=f"❌ Unexpected error: {m}", foreground="#D13438"
                     ))
 
             threading.Thread(target=_do, daemon=True).start()
