@@ -14,7 +14,7 @@ from core.uploader import BallchasingClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
-_POST_GAME_DELAY = 10.0
+_POST_GAME_DELAY_DEFAULT = 30.0  # fallback if config not loaded yet
 
 
 class Application:
@@ -104,9 +104,10 @@ class Application:
             self._last_game_end = now
             self._win.set_statusbar("Game ended — fetching replay…")
             if self.config.auto_upload:
+                delay = float(getattr(self.config, "post_game_delay", _POST_GAME_DELAY_DEFAULT))
                 threading.Thread(
                     target=self._run_epic_upload,
-                    args=(_POST_GAME_DELAY,),
+                    args=(delay,),
                     daemon=True,
                     name="auto-upload",
                 ).start()

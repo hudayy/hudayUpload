@@ -174,6 +174,17 @@ class SettingsDialog(tk.Toplevel):
             variable=self._startup_var,
         ).pack(anchor="w")
 
+        delay_row = ttk.Frame(beh_frame)
+        delay_row.pack(anchor="w", pady=(6, 0))
+        ttk.Label(delay_row, text="Delay after game end before fetching replay:").pack(side=tk.LEFT)
+        self._delay_var = tk.IntVar()
+        ttk.Spinbox(
+            delay_row,
+            textvariable=self._delay_var,
+            from_=0, to=120, increment=5, width=5,
+        ).pack(side=tk.LEFT, padx=(6, 4))
+        ttk.Label(delay_row, text="seconds").pack(side=tk.LEFT)
+
         # ── buttons ──────────────────────────────────────────────────────────
         btn_row = ttk.Frame(self)
         btn_row.pack(fill=tk.X, padx=14, pady=(4, 12))
@@ -196,6 +207,7 @@ class SettingsDialog(tk.Toplevel):
         self._auto_var.set(self.cfg.auto_upload)
         self._minimized_var.set(self.cfg.start_minimized)
         self._startup_var.set(self.cfg.launch_at_startup)
+        self._delay_var.set(int(self.cfg.post_game_delay))
         self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
@@ -219,6 +231,7 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.auto_upload = self._auto_var.get()
         self.cfg.start_minimized = self._minimized_var.get()
         self.cfg.launch_at_startup = self._startup_var.get()
+        self.cfg.post_game_delay = self._delay_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 
