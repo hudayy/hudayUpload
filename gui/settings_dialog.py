@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -194,6 +195,9 @@ class SettingsDialog(tk.Toplevel):
         )
         ttk.Button(btn_row, text="Cancel", command=self.destroy, width=10).pack(
             side=tk.RIGHT
+        )
+        ttk.Button(btn_row, text="Export Logs", command=self._export_logs, width=12).pack(
+            side=tk.LEFT
         )
 
     # ── load / save ──────────────────────────────────────────────────────────
@@ -466,6 +470,28 @@ class SettingsDialog(tk.Toplevel):
 
         dlg.protocol("WM_DELETE_WINDOW", _on_close)
         dlg.after(500, _poll_clipboard)
+
+    def _export_logs(self) -> None:
+        import main as _main
+        lines = list(_main.log_buffer.records)
+        if not lines:
+            messagebox.showinfo("Export Logs", "No log entries yet.", parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Logs",
+            defaultextension=".txt",
+            initialfile=f"hudayUpload_{time.strftime('%Y%m%d_%H%M%S')}.log",
+            filetypes=[("Text files", "*.txt *.log"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            messagebox.showinfo("Export Logs", f"Logs saved to:\n{path}", parent=self)
+        except OSError as exc:
+            messagebox.showerror("Export Failed", str(exc), parent=self)
 
     def _disconnect_epic(self) -> None:
         self.cfg.epic_refresh_token = ""

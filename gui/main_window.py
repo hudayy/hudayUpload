@@ -5,7 +5,7 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Optional
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -98,6 +98,15 @@ class MainWindow:
         self._lbl_bc = ttk.Label(row2, text="Not configured", anchor="w")
         self._lbl_bc.pack(side=tk.LEFT, fill=tk.X)
 
+        # Epic Games row
+        row3 = ttk.Frame(status_frame)
+        row3.pack(fill=tk.X, pady=2)
+        ttk.Label(row3, text="Epic Games", width=14, anchor="w").pack(side=tk.LEFT)
+        self._dot_epic = _Dot(row3)
+        self._dot_epic.pack(side=tk.LEFT, padx=(4, 6))
+        self._lbl_epic = ttk.Label(row3, text="Not connected", anchor="w")
+        self._lbl_epic.pack(side=tk.LEFT, fill=tk.X)
+
         # ── activity log ─────────────────────────────────────────────────────
         log_frame = ttk.LabelFrame(root, text="Recent Uploads", padding=(8, 4, 8, 8))
         log_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
@@ -146,10 +155,6 @@ class MainWindow:
         ).pack(side=tk.LEFT)
 
         ttk.Button(
-            toolbar, text="Export Logs", command=self._export_logs, width=12
-        ).pack(side=tk.RIGHT, padx=(4, 0))
-
-        ttk.Button(
             toolbar, text="Minimize to Tray", command=self._minimize_to_tray, width=16
         ).pack(side=tk.RIGHT)
 
@@ -180,6 +185,14 @@ class MainWindow:
         else:
             self._dot_bc.set_color(_CLR_ERR)
             self._lbl_bc.config(text=text or "Not configured — open Settings")
+
+    def set_epic_status(self, ok: bool, text: str = "") -> None:
+        if ok:
+            self._dot_epic.set_color(_CLR_OK)
+            self._lbl_epic.config(text=text or "Connected")
+        else:
+            self._dot_epic.set_color(_CLR_NEUTRAL)
+            self._lbl_epic.config(text=text or "Not connected — open Settings")
 
     def set_statusbar(self, text: str) -> None:
         self._statusbar.config(text=text)
@@ -224,32 +237,16 @@ class MainWindow:
             self.set_statusbar("Enter your Ballchasing API token in Settings to get started.")
         else:
             self.set_statusbar("Watching for new replays…")
+        cfg = self.app.config
+        if cfg.has_epic_auth:
+            name = cfg.epic_display_name.strip()
+            self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
+        else:
+            self.set_epic_status(False)
 
     def _open_settings(self) -> None:
         from gui.settings_dialog import SettingsDialog
         SettingsDialog(self.root, self.app)
-
-    def _export_logs(self) -> None:
-        import main as _main
-        lines = list(_main.log_buffer.records)
-        if not lines:
-            messagebox.showinfo("Export Logs", "No log entries yet.", parent=self.root)
-            return
-        path = filedialog.asksaveasfilename(
-            parent=self.root,
-            title="Export Logs",
-            defaultextension=".txt",
-            initialfile=f"hudayUpload_{time.strftime('%Y%m%d_%H%M%S')}.log",
-            filetypes=[("Text files", "*.txt *.log"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-            self.set_statusbar(f"Logs exported to {path}")
-        except OSError as exc:
-            messagebox.showerror("Export Failed", str(exc), parent=self.root)
 
     def _minimize_to_tray(self) -> None:
         self.root.withdraw()

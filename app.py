@@ -75,6 +75,16 @@ class Application:
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
         self._watcher.start()
         self._verify_bc_token_async()
+        self._refresh_epic_status_ui()
+
+    def _refresh_epic_status_ui(self) -> None:
+        cfg = self.config
+        if cfg.has_epic_auth:
+            name = cfg.epic_display_name.strip()
+            self.root.after(0, self._win.set_epic_status, True,
+                            f"Connected as {name}" if name else "Connected")
+        else:
+            self.root.after(0, self._win.set_epic_status, False, "Not connected — open ⚙ Settings")
 
     # ── event pump ───────────────────────────────────────────────────────────
 
