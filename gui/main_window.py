@@ -5,7 +5,7 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Optional
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -146,6 +146,10 @@ class MainWindow:
         ).pack(side=tk.LEFT)
 
         ttk.Button(
+            toolbar, text="Export Logs", command=self._export_logs, width=12
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        ttk.Button(
             toolbar, text="Minimize to Tray", command=self._minimize_to_tray, width=16
         ).pack(side=tk.RIGHT)
 
@@ -224,6 +228,28 @@ class MainWindow:
     def _open_settings(self) -> None:
         from gui.settings_dialog import SettingsDialog
         SettingsDialog(self.root, self.app)
+
+    def _export_logs(self) -> None:
+        import main as _main
+        lines = list(_main.log_buffer.records)
+        if not lines:
+            messagebox.showinfo("Export Logs", "No log entries yet.", parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export Logs",
+            defaultextension=".txt",
+            initialfile=f"hudayUpload_{time.strftime('%Y%m%d_%H%M%S')}.log",
+            filetypes=[("Text files", "*.txt *.log"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            self.set_statusbar(f"Logs exported to {path}")
+        except OSError as exc:
+            messagebox.showerror("Export Failed", str(exc), parent=self.root)
 
     def _minimize_to_tray(self) -> None:
         self.root.withdraw()

@@ -117,14 +117,17 @@ class Application:
     def _run_epic_upload(self, delay: float) -> None:
         """Wait `delay` seconds, then fetch + download + upload via Epic API."""
         if delay > 0:
+            logger.info("Waiting %.0f seconds before fetching replay…", delay)
             time.sleep(delay)
 
         with self._uploading_lock:
             if not self.config.has_bc_token:
+                logger.warning("Upload skipped — no Ballchasing token configured")
                 self.root.after(0, self._win.set_statusbar,
                                 "No Ballchasing token — open ⚙ Settings.")
                 return
             if not self.config.has_epic_auth:
+                logger.warning("Upload skipped — no Epic auth token")
                 self.root.after(0, self._win.set_statusbar,
                                 "Not logged in to Epic — open ⚙ Settings to connect.")
                 return
@@ -132,10 +135,13 @@ class Application:
             self.root.after(0, self._win.set_statusbar, "Fetching match from Epic API…")
 
             # Refresh EGS access token
+            logger.info("Refreshing Epic Games access token for %s",
+                        self.config.epic_display_name or self.config.epic_account_id)
             try:
                 token_data = self._epic.refresh_login(self.config.epic_refresh_token)
+                logger.info("Epic token refreshed — account: %s", token_data.get("display_name") or token_data.get("account_id"))
             except EpicAuthError as exc:
-                logger.error("Epic refresh failed: %s", exc)
+                logger.error("Epic token refresh failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar,
                                 f"Epic login expired — re-authenticate in Settings. ({exc})")
                 return
@@ -147,6 +153,7 @@ class Application:
             self.config.save()
 
             # Fetch latest unuploaded match
+            logger.info("Fetching match history from PsyNet for account %s", token_data["account_id"])
             try:
                 entry = self._epic.get_latest_unuploaded(
                     access_token  = token_data["access_token"],
@@ -155,12 +162,13 @@ class Application:
                     uploaded_guids= self._uploaded_guids,
                 )
             except EpicAuthError as exc:
-                logger.error("GetMatchHistory failed: %s", exc)
+                logger.error("PsyNet match history request failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar,
                                 f"Epic API error: {exc}")
                 return
 
             if entry is None:
+                logger.info("No new unuploaded match found in history")
                 self.root.after(0, self._win.set_statusbar,
                                 "No new match found in Epic history yet — try Upload Now later.")
                 return
@@ -169,20 +177,31 @@ class Application:
             replay_url = entry["replay_url"]
             filename   = f"{guid}.replay"
 
+            logger.info("Downloading replay %s", filename)
             self.root.after(0, self._win.set_statusbar, f"Downloading replay {filename}…")
             try:
                 data = self._epic.download_replay(replay_url)
+                logger.info("Replay downloaded — %d bytes", len(data))
             except EpicAuthError as exc:
                 logger.error("Replay download failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar, f"Download failed: {exc}")
                 return
 
+            logger.info("Uploading %s to ballchasing (visibility=%s)",
+                        filename, self.config.ballchasing_visibility)
             self.root.after(0, self._win.set_statusbar, f"Uploading {filename} to ballchasing…")
             client = BallchasingClient(
                 self.config.ballchasing_token,
                 self.config.ballchasing_visibility,
             )
             result = client.upload_bytes(filename, data)
+
+            if result.ok and not result.duplicate:
+                logger.info("Upload successful — %s — %s", filename, result.url)
+            elif result.duplicate:
+                logger.info("Already on ballchasing (duplicate) — %s", filename)
+            else:
+                logger.error("Ballchasing upload failed — %s — %s", filename, result.error)
 
             self._uploaded_guids.add(guid)
             self.config.add_uploaded_guid(guid)

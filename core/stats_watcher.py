@@ -97,7 +97,7 @@ class StatsWatcher:
 
             self._connected = True
             self._post({"type": "connected"})
-            logger.info("Connected to RL Stats API on port %d", self.port)
+            logger.debug("Connected to RL Stats API on port %d", self.port)
 
             try:
                 await self._read_loop(reader)
@@ -116,7 +116,7 @@ class StatsWatcher:
             if self._connected:
                 self._connected = False
                 self._post({"type": "disconnected"})
-                logger.info("Disconnected from RL Stats API")
+                logger.debug("Disconnected from RL Stats API")
 
             try:
                 await asyncio.sleep(5)
@@ -154,11 +154,10 @@ class StatsWatcher:
             except json.JSONDecodeError:
                 data = {}
 
-        if event != "UpdateState":
-            logger.info("RL event: %s", event)
+        logger.debug("RL event: %s", event)
 
         if event in _GAME_END_EVENTS:
-            logger.info("Game ended (event=%s)", event)
+            logger.info("Game ended — triggering upload (event=%s)", event)
             self._post({"type": "game_ended", "event": event, "data": data})
 
     def _post(self, msg: dict) -> None:
