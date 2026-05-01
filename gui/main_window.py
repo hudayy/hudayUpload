@@ -178,13 +178,17 @@ class MainWindow:
             self._dot_rl.set_color(_CLR_WARN)
             self._lbl_rl.config(text=text or "Disconnected")
 
-    def set_bc_status(self, ok: bool, text: str = "") -> None:
+    def set_bc_status(self, ok: bool, text: str = "", name_color: str = "") -> None:
         if ok:
             self._dot_bc.set_color(_CLR_OK)
-            self._lbl_bc.config(text=text or "Authenticated")
+            self._lbl_bc.config(
+                text=text or "Authenticated",
+                foreground=name_color if name_color else _CLR_OK,
+            )
         else:
             self._dot_bc.set_color(_CLR_ERR)
-            self._lbl_bc.config(text=text or "Not configured — open Settings")
+            self._lbl_bc.config(text=text or "Not configured — open Settings",
+                                foreground=_CLR_ERR)
 
     def set_epic_status(self, ok: bool, text: str = "") -> None:
         if ok:

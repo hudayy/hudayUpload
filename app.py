@@ -244,12 +244,12 @@ class Application:
 
         def _check():
             client = BallchasingClient(self.config.ballchasing_token)
-            ok, info = client.verify_token()
+            ok, name, color = client.verify_token()
             if ok:
-                self.root.after(0, self._win.set_bc_status, True,
-                                f"Authenticated as {info}" if info else "Authenticated")
+                text = f"Authenticated as {name}" if name else "Authenticated"
+                self.root.after(0, self._win.set_bc_status, True, text, color)
             else:
-                self.root.after(0, self._win.set_bc_status, False, f"Token error: {info}")
+                self.root.after(0, self._win.set_bc_status, False, f"Token error: {name}")
 
         threading.Thread(target=_check, daemon=True, name="bc-verify").start()
 

@@ -291,11 +291,14 @@ class SettingsDialog(tk.Toplevel):
 
         def _check():
             from core.uploader import BallchasingClient
-            ok, info = BallchasingClient(token).verify_token()
-            self.after(0, lambda: self._bc_status_lbl.config(
-                text=f"✅ Valid — {info}" if ok else f"❌ Invalid: {info}",
-                foreground="#107C10" if ok else "#D13438",
-            ))
+            ok, name, color = BallchasingClient(token).verify_token()
+            if ok:
+                text = f"✅ Valid — {name}" if name else "✅ Valid"
+                self.after(0, lambda: self._bc_status_lbl.config(text=text, foreground=color))
+            else:
+                self.after(0, lambda: self._bc_status_lbl.config(
+                    text=f"❌ Invalid: {name}", foreground="#D13438"
+                ))
 
         threading.Thread(target=_check, daemon=True).start()
 
@@ -393,7 +396,7 @@ class SettingsDialog(tk.Toplevel):
             dlg,
             text=(
                 "A page opened in your browser.\n\n"
-                "Log in, then copy the code shown on the page —\n"
+                'Log in, then copy the Authorization Code shown on the page —\n'
                 "this window will close automatically."
             ),
             justify="left",
@@ -453,13 +456,33 @@ class SettingsDialog(tk.Toplevel):
 
             threading.Thread(target=_do, daemon=True).start()
 
+        def _extract_code(clip: str) -> str:
+            """Return the auth code from a plain code string or the full JSON blob."""
+            clip = clip.strip()
+            if not clip:
+                return ""
+            # Handle the full JSON Epic returns e.g. {"authorizationCode":"abc123",...}
+            if clip.startswith("{"):
+                try:
+                    import json as _json
+                    obj = _json.loads(clip)
+                    code = obj.get("authorizationCode") or obj.get("code") or ""
+                    return code.strip()
+                except Exception:
+                    return ""
+            # Plain code — alphanumeric + hyphens, max 64 chars
+            if len(clip) <= 64 and clip.replace("-", "").isalnum():
+                return clip
+            return ""
+
         def _poll_clipboard():
             if _cancelled[0] or not dlg.winfo_exists():
                 return
             try:
                 clip = dlg.clipboard_get()
-                if clip and len(clip) <= 64 and clip.replace("-", "").isalnum():
-                    _try_code(clip)
+                code = _extract_code(clip)
+                if code:
+                    _try_code(code)
             except Exception:
                 pass
             dlg.after(500, _poll_clipboard)

@@ -35,11 +35,22 @@ class BallchasingClient:
 
     # ── auth ─────────────────────────────────────────────────────────────────
 
-    def verify_token(self) -> tuple[bool, str]:
-        """Return (ok, display_string).
+    # Tier → hex color (matches ballchasing.com/upload palette)
+    _TIER_COLORS: dict[str, str] = {
+        "legend":         "#FF8FC1",
+        "gc":             "#F540EC",
+        "champion":       "#9982BA",
+        "diamond":        "#0579FF",
+        "gold":           "#B8860B",
+        "free":           "#767676",
+        "":               "#767676",
+    }
 
-        display_string is the user's name, with their tier appended
-        in brackets if they are not on the free tier.
+    def verify_token(self) -> tuple[bool, str, str]:
+        """Return (ok, name, tier_color).
+
+        name       — display name from ballchasing (empty string on failure)
+        tier_color — hex color for the tier, or error message on failure
         """
         try:
             r = self._session.get(_BC_PING_URL, timeout=10)
@@ -47,14 +58,11 @@ class BallchasingClient:
                 data = r.json()
                 name = data.get("steam_name") or data.get("name", "")
                 tier = (data.get("type") or "").lower()
-                if tier and tier != "free":
-                    display = f"{name} [{tier.capitalize()}]" if name else f"[{tier.capitalize()}]"
-                else:
-                    display = name
-                return True, display
-            return False, f"HTTP {r.status_code}"
+                color = self._TIER_COLORS.get(tier, self._TIER_COLORS["free"])
+                return True, name, color
+            return False, f"HTTP {r.status_code}", ""
         except requests.RequestException as exc:
-            return False, str(exc)
+            return False, str(exc), ""
 
     # ── upload ────────────────────────────────────────────────────────────────
 
