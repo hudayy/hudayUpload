@@ -260,8 +260,7 @@ class Application:
 
     def _verify_bc_token_async(self) -> None:
         if not self.config.has_bc_token:
-            self.root.after(0, self._win.set_bc_status, False,
-                            "No API token — open ⚙ Settings")
+            self.root.after(0, self._win.set_bc_status, False)
             return
 
         def _check():

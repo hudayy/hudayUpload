@@ -86,7 +86,7 @@ class MainWindow:
         ttk.Label(row1, text="Stats API", width=14, anchor="w").pack(side=tk.LEFT)
         self._dot_rl = _Dot(row1)
         self._dot_rl.pack(side=tk.LEFT, padx=(4, 6))
-        self._lbl_rl = ttk.Label(row1, text="Connecting…", anchor="w")
+        self._lbl_rl = _ClickableLabel(row1, text="Connecting…", anchor="w")
         self._lbl_rl.pack(side=tk.LEFT, fill=tk.X)
 
         # Ballchasing row
@@ -95,7 +95,7 @@ class MainWindow:
         ttk.Label(row2, text="Ballchasing", width=14, anchor="w").pack(side=tk.LEFT)
         self._dot_bc = _Dot(row2)
         self._dot_bc.pack(side=tk.LEFT, padx=(4, 6))
-        self._lbl_bc = ttk.Label(row2, text="Not configured", anchor="w")
+        self._lbl_bc = _ClickableLabel(row2, text="Not configured", anchor="w")
         self._lbl_bc.pack(side=tk.LEFT, fill=tk.X)
 
         # Epic Games row
@@ -104,8 +104,19 @@ class MainWindow:
         ttk.Label(row3, text="Epic Games", width=14, anchor="w").pack(side=tk.LEFT)
         self._dot_epic = _Dot(row3)
         self._dot_epic.pack(side=tk.LEFT, padx=(4, 6))
-        self._lbl_epic = ttk.Label(row3, text="Not connected", anchor="w")
+        self._lbl_epic = _ClickableLabel(row3, text="Not connected", anchor="w")
         self._lbl_epic.pack(side=tk.LEFT, fill=tk.X)
+
+        # ── setup banner (shown when critical items need configuring) ─────────
+        self._banner = tk.Frame(root, bg="#FFF4CE", highlightbackground="#E8A000",
+                                highlightthickness=1)
+        self._banner_lbl = tk.Label(
+            self._banner, bg="#FFF4CE", fg="#5D3A00",
+            font=("Segoe UI", 9), anchor="w", padx=10, pady=6,
+            text="", cursor="hand2",
+        )
+        self._banner_lbl.pack(fill=tk.X)
+        self._banner_lbl.bind("<Button-1>", lambda _: self._open_settings())
 
         # ── activity log ─────────────────────────────────────────────────────
         log_frame = ttk.LabelFrame(root, text="Recent Uploads", padding=(8, 4, 8, 8))
@@ -170,33 +181,50 @@ class MainWindow:
         """connected=True → green, False → orange (error), None → grey (idle wait)."""
         if connected is True:
             self._dot_rl.set_color(_CLR_OK)
-            self._lbl_rl.config(text=text or "Connected — watching for games")
+            self._lbl_rl.set_normal(text or "Connected — watching for games")
         elif connected is None:
             self._dot_rl.set_color(_CLR_NEUTRAL)
-            self._lbl_rl.config(text=text or "Waiting for Rocket League…")
+            self._lbl_rl.set_normal(text or "Waiting for Rocket League…")
         else:
             self._dot_rl.set_color(_CLR_WARN)
-            self._lbl_rl.config(text=text or "Disconnected")
+            self._lbl_rl.set_normal(text or "Disconnected")
+        self._update_banner()
 
     def set_bc_status(self, ok: bool, text: str = "", name_color: str = "") -> None:
         if ok:
             self._dot_bc.set_color(_CLR_OK)
-            self._lbl_bc.config(
-                text=text or "Authenticated",
-                foreground=name_color if name_color else _CLR_OK,
-            )
+            self._lbl_bc.set_normal(text or "Authenticated",
+                                    color=name_color if name_color else _CLR_OK)
         else:
             self._dot_bc.set_color(_CLR_ERR)
-            self._lbl_bc.config(text=text or "Not configured — open Settings",
-                                foreground=_CLR_ERR)
+            self._lbl_bc.set_action("⚙ No API token — click to open Settings",
+                                    self._open_settings)
+        self._update_banner()
 
     def set_epic_status(self, ok: bool, text: str = "") -> None:
         if ok:
             self._dot_epic.set_color(_CLR_OK)
-            self._lbl_epic.config(text=text or "Connected")
+            self._lbl_epic.set_normal(text or "Connected")
         else:
             self._dot_epic.set_color(_CLR_NEUTRAL)
-            self._lbl_epic.config(text=text or "Not connected — open Settings")
+            self._lbl_epic.set_action("⚙ Not connected — click to open Settings",
+                                      self._open_settings)
+        self._update_banner()
+
+    def _update_banner(self) -> None:
+        missing = []
+        if not self.app.config.has_bc_token:
+            missing.append("Ballchasing API token")
+        if not self.app.config.has_epic_auth:
+            missing.append("Epic Games account")
+        if missing:
+            self._banner_lbl.config(
+                text="⚠  Setup required: " + " and ".join(missing)
+                     + " — click here to open Settings"
+            )
+            self._banner.pack(fill=tk.X, padx=12, pady=(0, 4))
+        else:
+            self._banner.pack_forget()
 
     def set_statusbar(self, text: str) -> None:
         self._statusbar.config(text=text)
@@ -236,12 +264,12 @@ class MainWindow:
             webbrowser.open(self._url_map[sel[0]])
 
     def _refresh_status(self) -> None:
-        if not self.app.config.has_bc_token:
-            self.set_bc_status(False, "No API token — open ⚙ Settings")
-            self.set_statusbar("Enter your Ballchasing API token in Settings to get started.")
-        else:
-            self.set_statusbar("Watching for new replays…")
         cfg = self.app.config
+        if cfg.has_bc_token:
+            self.set_statusbar("Watching for new replays…")
+        else:
+            self.set_bc_status(False)
+            self.set_statusbar("Open ⚙ Settings to finish setup.")
         if cfg.has_epic_auth:
             name = cfg.epic_display_name.strip()
             self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
@@ -265,6 +293,30 @@ class MainWindow:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+class _ClickableLabel(ttk.Label):
+    """A label that can switch between normal text and a clickable action link."""
+
+    def __init__(self, parent, **kwargs) -> None:
+        super().__init__(parent, **kwargs)
+        self._action = None
+
+    def set_normal(self, text: str, color: str = "") -> None:
+        self.config(text=text, foreground=color or "", cursor="")
+        self._unbind_click()
+        self._action = None
+
+    def set_action(self, text: str, callback) -> None:
+        self.config(text=text, foreground=_CLR_ACCENT, cursor="hand2")
+        self._action = callback
+        self.bind("<Button-1>", lambda _: callback())
+
+    def _unbind_click(self) -> None:
+        try:
+            self.unbind("<Button-1>")
+        except Exception:
+            pass
 
 
 class _Dot(tk.Canvas):
