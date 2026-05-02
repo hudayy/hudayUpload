@@ -155,6 +155,11 @@ class Application:
                 self.root.after(0, self._win.set_statusbar,
                                 f"Epic login expired — re-authenticate in Settings. ({exc})")
                 return
+            except Exception as exc:
+                logger.error("Network error refreshing Epic token: %s", exc)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Network error — will retry next game: {exc}")
+                return
 
             # Save refreshed tokens
             self.config.epic_refresh_token = token_data["refresh_token"]
@@ -176,6 +181,11 @@ class Application:
                 self.root.after(0, self._win.set_statusbar,
                                 f"Epic API error: {exc}")
                 return
+            except Exception as exc:
+                logger.error("Network error fetching match history: %s", exc)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Network error — will retry next game: {exc}")
+                return
 
             if entry is None:
                 logger.info("No new unuploaded match found in history")
@@ -195,6 +205,11 @@ class Application:
             except EpicAuthError as exc:
                 logger.error("Replay download failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar, f"Download failed: {exc}")
+                return
+            except Exception as exc:
+                logger.error("Network error downloading replay: %s", exc)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Network error downloading replay: {exc}")
                 return
 
             logger.info("Uploading %s to ballchasing (visibility=%s)",
