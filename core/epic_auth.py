@@ -100,16 +100,18 @@ class EpicClient:
             "token_type":    "eg1",
         })
 
-    def get_latest_unuploaded(
+    def get_unuploaded_matches(
         self,
         access_token: str,
         account_id: str,
         display_name: str,
         uploaded_guids: set,
-    ) -> Optional[dict]:
-        """Full chain: EOS token → PsyNet → GetMatchHistory → first unuploaded entry.
+        max_count: int = 5,
+    ) -> list[dict]:
+        """Full chain: EOS token → PsyNet → GetMatchHistory → up to max_count unuploaded entries.
 
-        Returns {'match_guid': str, 'replay_url': str} or None.
+        Returns a list of {'match_guid': str, 'replay_url': str}, oldest-first so
+        they are uploaded in chronological order.
         Raises EpicAuthError on any auth/network failure.
         """
         exchange_code          = self._get_exchange_code(access_token)
@@ -117,14 +119,22 @@ class EpicClient:
         ws_url, psy_token, sid = self._psynet_auth(eos_token, eos_acct_id, display_name)
         matches                = self._get_match_history(ws_url, psy_token, sid, eos_acct_id)
 
+        found = []
         for entry in matches:
             guid = entry.get("Match", {}).get("MatchGUID", "")
             url  = entry.get("ReplayUrl", "")
             if guid and url and guid not in uploaded_guids:
-                logger.info("Found unuploaded match: %s", guid)
-                return {"match_guid": guid, "replay_url": url}
-        logger.info("No new unuploaded matches found in history (%d total)", len(matches))
-        return None
+                found.append({"match_guid": guid, "replay_url": url})
+                if len(found) >= max_count:
+                    break
+
+        if found:
+            logger.info("Found %d unuploaded match(es) (limit=%d)", len(found), max_count)
+        else:
+            logger.info("No new unuploaded matches found in history (%d total)", len(matches))
+
+        # Reverse so we upload oldest first
+        return list(reversed(found))
 
     def download_replay(self, url: str) -> bytes:
         """Download replay bytes from the given URL."""

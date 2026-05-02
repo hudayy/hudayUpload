@@ -186,6 +186,16 @@ class SettingsDialog(tk.Toplevel):
         ).pack(side=tk.LEFT, padx=(6, 4))
         ttk.Label(delay_row, text="seconds").pack(side=tk.LEFT)
 
+        batch_row = ttk.Frame(beh_frame)
+        batch_row.pack(anchor="w", pady=(4, 0))
+        ttk.Label(batch_row, text="Recent matches to upload per pass:").pack(side=tk.LEFT)
+        self._batch_var = tk.IntVar()
+        ttk.Spinbox(
+            batch_row,
+            textvariable=self._batch_var,
+            from_=1, to=20, increment=1, width=5,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
         # ── buttons ──────────────────────────────────────────────────────────
         btn_row = ttk.Frame(self)
         btn_row.pack(fill=tk.X, padx=14, pady=(4, 12))
@@ -212,6 +222,7 @@ class SettingsDialog(tk.Toplevel):
         self._minimized_var.set(self.cfg.start_minimized)
         self._startup_var.set(self.cfg.launch_at_startup)
         self._delay_var.set(int(self.cfg.post_game_delay))
+        self._batch_var.set(int(self.cfg.upload_batch_size))
         self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
@@ -236,6 +247,7 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.start_minimized = self._minimized_var.get()
         self.cfg.launch_at_startup = self._startup_var.get()
         self.cfg.post_game_delay = self._delay_var.get()
+        self.cfg.upload_batch_size = self._batch_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 

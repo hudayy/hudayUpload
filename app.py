@@ -168,13 +168,16 @@ class Application:
             self.config.save()
 
             # Fetch latest unuploaded match
-            logger.info("Fetching match history from PsyNet for account %s", token_data["account_id"])
+            batch_size = int(getattr(self.config, "upload_batch_size", 5))
+            logger.info("Fetching match history from PsyNet for account %s (batch=%d)",
+                        token_data["account_id"], batch_size)
             try:
-                entry = self._epic.get_latest_unuploaded(
+                entries = self._epic.get_unuploaded_matches(
                     access_token  = token_data["access_token"],
                     account_id    = token_data["account_id"],
                     display_name  = token_data["display_name"],
                     uploaded_guids= self._uploaded_guids,
+                    max_count     = batch_size,
                 )
             except EpicAuthError as exc:
                 logger.error("PsyNet match history request failed: %s", exc)
@@ -187,50 +190,54 @@ class Application:
                                 f"Network error — will retry next game: {exc}")
                 return
 
-            if entry is None:
-                logger.info("No new unuploaded match found in history")
+            if not entries:
+                logger.info("No new unuploaded matches found in history")
                 self.root.after(0, self._win.set_statusbar,
-                                "No new match found in Epic history yet — try Upload Now later.")
+                                "No new matches found in Epic history — try Upload Now later.")
                 return
 
-            guid       = entry["match_guid"]
-            replay_url = entry["replay_url"]
-            filename   = f"{guid}.replay"
-
-            logger.info("Downloading replay %s", filename)
-            self.root.after(0, self._win.set_statusbar, f"Downloading replay {filename}…")
-            try:
-                data = self._epic.download_replay(replay_url)
-                logger.info("Replay downloaded — %d bytes", len(data))
-            except EpicAuthError as exc:
-                logger.error("Replay download failed: %s", exc)
-                self.root.after(0, self._win.set_statusbar, f"Download failed: {exc}")
-                return
-            except Exception as exc:
-                logger.error("Network error downloading replay: %s", exc)
-                self.root.after(0, self._win.set_statusbar,
-                                f"Network error downloading replay: {exc}")
-                return
-
-            logger.info("Uploading %s to ballchasing (visibility=%s)",
-                        filename, self.config.ballchasing_visibility)
-            self.root.after(0, self._win.set_statusbar, f"Uploading {filename} to ballchasing…")
             client = BallchasingClient(
                 self.config.ballchasing_token,
                 self.config.ballchasing_visibility,
             )
-            result = client.upload_bytes(filename, data)
 
-            if result.ok and not result.duplicate:
-                logger.info("Upload successful — %s — %s", filename, result.url)
-            elif result.duplicate:
-                logger.info("Already on ballchasing (duplicate) — %s", filename)
-            else:
-                logger.error("Ballchasing upload failed — %s — %s", filename, result.error)
+            for i, entry in enumerate(entries, 1):
+                guid       = entry["match_guid"]
+                replay_url = entry["replay_url"]
+                filename   = f"{guid}.replay"
 
-            self._uploaded_guids.add(guid)
-            self.config.add_uploaded_guid(guid)
-            self.root.after(0, self._on_upload_done, result)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Downloading replay {i}/{len(entries)}: {filename}…")
+                logger.info("Downloading replay %s (%d/%d)", filename, i, len(entries))
+                try:
+                    data = self._epic.download_replay(replay_url)
+                    logger.info("Replay downloaded — %d bytes", len(data))
+                except EpicAuthError as exc:
+                    logger.error("Replay download failed: %s", exc)
+                    self.root.after(0, self._win.set_statusbar, f"Download failed: {exc}")
+                    return
+                except Exception as exc:
+                    logger.error("Network error downloading replay: %s", exc)
+                    self.root.after(0, self._win.set_statusbar,
+                                    f"Network error downloading replay: {exc}")
+                    return
+
+                logger.info("Uploading %s to ballchasing (visibility=%s)",
+                            filename, self.config.ballchasing_visibility)
+                self.root.after(0, self._win.set_statusbar,
+                                f"Uploading {i}/{len(entries)}: {filename} to ballchasing…")
+                result = client.upload_bytes(filename, data)
+
+                if result.ok and not result.duplicate:
+                    logger.info("Upload successful — %s — %s", filename, result.url)
+                elif result.duplicate:
+                    logger.info("Already on ballchasing (duplicate) — %s", filename)
+                else:
+                    logger.error("Ballchasing upload failed — %s — %s", filename, result.error)
+
+                self._uploaded_guids.add(guid)
+                self.config.add_uploaded_guid(guid)
+                self.root.after(0, self._on_upload_done, result)
 
     def _on_upload_done(self, result: UploadResult) -> None:
         if result.ok and not result.duplicate:

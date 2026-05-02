@@ -20,6 +20,7 @@ _DEFAULTS = {
     "launch_at_startup": False,
     "auto_upload": True,
     "post_game_delay": 30,
+    "upload_batch_size": 5,
     # Epic Games auth (populated after user logs in)
     "epic_refresh_token": "",
     "epic_account_id": "",
