@@ -11,6 +11,13 @@ from typing import TYPE_CHECKING, Optional
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 _APP_NAME = "hudayUpload"
 
+def _app_title() -> str:
+    try:
+        from core.updater import VERSION
+        return f"{_APP_NAME} v{VERSION}"
+    except Exception:
+        return _APP_NAME
+
 if TYPE_CHECKING:
     from app import Application
 
@@ -27,7 +34,7 @@ class MainWindow:
         self.root = root
         self.app = app
 
-        root.title(_APP_NAME)
+        root.title(_app_title())
         root.geometry("480x540")
         root.minsize(380, 420)
         root.resizable(True, True)
@@ -121,6 +128,7 @@ class MainWindow:
         # ── activity log ─────────────────────────────────────────────────────
         log_frame = ttk.LabelFrame(root, text="Recent Uploads", padding=(8, 4, 8, 8))
         log_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+        self._log_frame = log_frame
 
         cols = ("time", "status", "file")
         self._tree = ttk.Treeview(
@@ -210,6 +218,41 @@ class MainWindow:
             self._lbl_epic.set_action("⚙ Not connected — click to open Settings",
                                       self._open_settings)
         self._update_banner()
+
+    def show_update_banner(self, new_version: str, download_url: str) -> None:
+        """Show a blue update-available banner above the log. Called from app.py."""
+        # Reuse the setup banner frame slot — create a separate update banner
+        if not hasattr(self, "_update_banner_frame"):
+            self._update_banner_frame = tk.Frame(
+                self.root, bg="#E3F2FD",
+                highlightbackground="#1565C0", highlightthickness=1,
+            )
+            inner = tk.Frame(self._update_banner_frame, bg="#E3F2FD")
+            inner.pack(fill=tk.X, padx=10, pady=5)
+            self._update_lbl = tk.Label(
+                inner, bg="#E3F2FD", fg="#0D47A1",
+                font=("Segoe UI", 9), anchor="w",
+            )
+            self._update_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._update_btn = tk.Button(
+                inner, text="Update now", bg="#1565C0", fg="white",
+                font=("Segoe UI", 9, "bold"), relief="flat",
+                padx=10, cursor="hand2",
+                activebackground="#0D47A1", activeforeground="white",
+            )
+            self._update_btn.pack(side=tk.RIGHT, padx=(6, 0))
+            self._dismiss_btn = tk.Button(
+                inner, text="Later", bg="#E3F2FD", fg="#555",
+                font=("Segoe UI", 9), relief="flat", padx=6, cursor="hand2",
+            )
+            self._dismiss_btn.pack(side=tk.RIGHT)
+
+        self._update_lbl.config(text=f"⬆  Update available: v{new_version}")
+        self._update_btn.config(command=lambda: self.app.apply_update(download_url))
+        self._dismiss_btn.config(command=lambda: self._update_banner_frame.pack_forget())
+        # Insert before the log frame (pack_forget + re-pack keeps z-order clean)
+        self._update_banner_frame.pack(fill=tk.X, padx=12, pady=(0, 4),
+                                       before=self._log_frame)
 
     def _update_banner(self) -> None:
         missing = []

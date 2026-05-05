@@ -10,6 +10,7 @@ from typing import Optional
 from core.config import Config
 from core.epic_auth import EpicAuthError, EpicClient
 from core.stats_watcher import StatsWatcher
+from core.updater import check_for_update, download_and_install
 from core.uploader import BallchasingClient, UploadResult
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class Application:
         self._watcher.start()
         self._start_event_pump()
         self._verify_bc_token_async()
+        self._check_for_update_async()
 
     def quit(self) -> None:
         self._watcher.stop()
@@ -301,6 +303,32 @@ class Application:
                 self.root.after(0, self._win.set_bc_status, False, f"Token error: {name}")
 
         threading.Thread(target=_check, daemon=True, name="bc-verify").start()
+
+    # ── auto-update ───────────────────────────────────────────────────────────
+
+    def _check_for_update_async(self) -> None:
+        def _check():
+            info = check_for_update()
+            if info:
+                self.root.after(0, self._win.show_update_banner,
+                                info["version"], info["download_url"])
+        threading.Thread(target=_check, daemon=True, name="update-check").start()
+
+    def apply_update(self, download_url: str) -> None:
+        """Download the new exe, swap it, and restart. Called from the GUI."""
+        def _progress(msg: str) -> None:
+            self.root.after(0, self._win.set_statusbar, msg)
+
+        def _do():
+            try:
+                download_and_install(download_url, progress_cb=_progress)
+                # Batch script is now running — quit so it can replace the exe
+                self.root.after(0, self.quit)
+            except RuntimeError as exc:
+                logger.error("Update failed: %s", exc)
+                self.root.after(0, self._win.set_statusbar, f"Update failed: {exc}")
+
+        threading.Thread(target=_do, daemon=True, name="apply-update").start()
 
     # ── system tray ───────────────────────────────────────────────────────────
 

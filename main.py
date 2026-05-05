@@ -4,6 +4,8 @@ import logging
 import sys
 import tkinter as tk
 
+from core.updater import VERSION  # re-exported so other modules can import from here
+
 _LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
 _LOG_DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
