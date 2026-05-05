@@ -21,12 +21,23 @@ def _app_title() -> str:
 if TYPE_CHECKING:
     from app import Application
 
-# ── colour palette (matches Windows 10/11 light mode) ────────────────────────
-_CLR_OK = "#107C10"       # Windows green
-_CLR_WARN = "#CA5010"     # Windows orange
-_CLR_ERR = "#D13438"      # Windows red
-_CLR_NEUTRAL = "#767676"  # Windows grey
-_CLR_ACCENT = "#0078D4"   # Windows blue
+# ── colour palette (dark theme) ──────────────────────────────────────────────
+_CLR_OK      = "#4CAF50"   # green
+_CLR_WARN    = "#FF9800"   # orange
+_CLR_ERR     = "#EF5350"   # red
+_CLR_NEUTRAL = "#9E9E9E"   # grey
+_CLR_ACCENT  = "#42A5F5"   # blue
+
+# Dark background used for tk (non-ttk) widgets so they match sv_ttk dark frames
+_CLR_BG      = "#1c1c1c"
+
+# Banner colours (dark-friendly)
+_BANNER_WARN_BG   = "#2D2000"
+_BANNER_WARN_FG   = "#FFD54F"
+_BANNER_WARN_EDGE = "#B8860B"
+_BANNER_UPD_BG    = "#0A1929"
+_BANNER_UPD_FG    = "#90CAF9"
+_BANNER_UPD_EDGE  = "#1565C0"
 
 
 class MainWindow:
@@ -48,9 +59,8 @@ class MainWindow:
         except Exception:
             pass
 
-        # Use the native Windows theme
-        style = ttk.Style(root)
-        _apply_theme(style)
+        # Apply dark theme
+        _apply_theme(root)
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
@@ -115,10 +125,10 @@ class MainWindow:
         self._lbl_epic.pack(side=tk.LEFT, fill=tk.X)
 
         # ── setup banner (shown when critical items need configuring) ─────────
-        self._banner = tk.Frame(root, bg="#FFF4CE", highlightbackground="#E8A000",
-                                highlightthickness=1)
+        self._banner = tk.Frame(root, bg=_BANNER_WARN_BG,
+                                highlightbackground=_BANNER_WARN_EDGE, highlightthickness=1)
         self._banner_lbl = tk.Label(
-            self._banner, bg="#FFF4CE", fg="#5D3A00",
+            self._banner, bg=_BANNER_WARN_BG, fg=_BANNER_WARN_FG,
             font=("Segoe UI", 9), anchor="w", padx=10, pady=6,
             text="", cursor="hand2",
         )
@@ -224,13 +234,13 @@ class MainWindow:
         # Reuse the setup banner frame slot — create a separate update banner
         if not hasattr(self, "_update_banner_frame"):
             self._update_banner_frame = tk.Frame(
-                self.root, bg="#E3F2FD",
-                highlightbackground="#1565C0", highlightthickness=1,
+                self.root, bg=_BANNER_UPD_BG,
+                highlightbackground=_BANNER_UPD_EDGE, highlightthickness=1,
             )
-            inner = tk.Frame(self._update_banner_frame, bg="#E3F2FD")
+            inner = tk.Frame(self._update_banner_frame, bg=_BANNER_UPD_BG)
             inner.pack(fill=tk.X, padx=10, pady=5)
             self._update_lbl = tk.Label(
-                inner, bg="#E3F2FD", fg="#0D47A1",
+                inner, bg=_BANNER_UPD_BG, fg=_BANNER_UPD_FG,
                 font=("Segoe UI", 9), anchor="w",
             )
             self._update_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -242,7 +252,7 @@ class MainWindow:
             )
             self._update_btn.pack(side=tk.RIGHT, padx=(6, 0))
             self._dismiss_btn = tk.Button(
-                inner, text="Later", bg="#E3F2FD", fg="#555",
+                inner, text="Later", bg=_BANNER_UPD_BG, fg="#9E9E9E",
                 font=("Segoe UI", 9), relief="flat", padx=6, cursor="hand2",
             )
             self._dismiss_btn.pack(side=tk.RIGHT)
@@ -369,7 +379,7 @@ class _Dot(tk.Canvas):
 
     def __init__(self, parent, **kwargs) -> None:
         super().__init__(parent, width=self._SIZE, height=self._SIZE,
-                         highlightthickness=0, **kwargs)
+                         highlightthickness=0, bg=_CLR_BG, **kwargs)
         self._oval = self.create_oval(1, 1, self._SIZE - 1, self._SIZE - 1,
                                       fill=_CLR_NEUTRAL, outline="")
 
@@ -377,16 +387,18 @@ class _Dot(tk.Canvas):
         self.itemconfig(self._oval, fill=color)
 
 
-def _apply_theme(style: ttk.Style) -> None:
-    available = style.theme_names()
-    for name in ("vista", "winnative", "xpnative", "clam"):
-        if name in available:
-            style.theme_use(name)
-            break
+def _apply_theme(root: tk.Tk) -> None:
+    import sv_ttk
+    sv_ttk.set_theme("dark")
 
-    style.configure("TLabel", font=("Segoe UI", 9))
-    style.configure("TButton", font=("Segoe UI", 9))
-    style.configure("TEntry", font=("Segoe UI", 9))
-    style.configure("TLabelframe.Label", font=("Segoe UI", 9, "bold"))
-    style.configure("Treeview", font=("Segoe UI", 9), rowheight=22)
+    root.configure(bg=_CLR_BG)
+
+    style = ttk.Style(root)
+    style.configure("TLabel",           font=("Segoe UI", 9))
+    style.configure("TButton",          font=("Segoe UI", 9))
+    style.configure("TEntry",           font=("Segoe UI", 9))
+    style.configure("TSpinbox",         font=("Segoe UI", 9))
+    style.configure("TCombobox",        font=("Segoe UI", 9))
+    style.configure("TLabelframe.Label",font=("Segoe UI", 9, "bold"))
+    style.configure("Treeview",         font=("Segoe UI", 9), rowheight=22)
     style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
