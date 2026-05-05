@@ -29,8 +29,10 @@ class Application:
         self._win: Optional["MainWindow"] = None  # set after GUI is built
         self._tray = None
 
-        # Prevent double-upload if two end events fire close together
+        # Debounce: prevent MatchEnded + PodiumStart from counting as two games
         self._last_game_end: float = 0.0
+        # Count of games played since the last upload batch
+        self._games_since_upload: int = 0
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -66,6 +68,7 @@ class Application:
             self.root.after(0, self._win.set_statusbar,
                             "No Ballchasing token — open ⚙ Settings.")
             return
+        self._games_since_upload = 0
         threading.Thread(
             target=self._run_epic_upload, args=(0.0,), daemon=True, name="manual-upload"
         ).start()
@@ -104,16 +107,41 @@ class Application:
             self._win.set_statusbar("Connected to Rocket League Stats API. Watching for games…")
         elif t == "disconnected":
             self._win.set_rl_status(None, "Waiting for Rocket League…")
-            self._win.set_statusbar("Rocket League not running — waiting…")
+            if self.config.auto_upload and self._games_since_upload > 0:
+                logger.info("Rocket League closed — triggering upload for %d pending game(s)",
+                            self._games_since_upload)
+                self._win.set_statusbar(
+                    f"Rocket League closed — uploading {self._games_since_upload} game(s)…"
+                )
+                self._games_since_upload = 0
+                delay = float(getattr(self.config, "post_game_delay", _POST_GAME_DELAY_DEFAULT))
+                threading.Thread(
+                    target=self._run_epic_upload,
+                    args=(delay,),
+                    daemon=True,
+                    name="auto-upload-on-close",
+                ).start()
+            else:
+                self._win.set_statusbar("Rocket League not running — waiting…")
         elif t == "connecting":
             self._win.set_rl_status(None, "Waiting for Rocket League…")
         elif t == "game_ended":
             now = time.monotonic()
             if now - self._last_game_end < 60:
-                return  # debounce — ignore if already triggered within 60 s
+                return  # debounce — MatchEnded + PodiumStart fire within ~3 s of each other
             self._last_game_end = now
-            self._win.set_statusbar("Game ended — fetching replay…")
-            if self.config.auto_upload:
+            self._games_since_upload += 1
+            every_n = int(getattr(self.config, "upload_every_n_games", 15))
+            logger.info("Game ended — %d/%d games since last upload",
+                        self._games_since_upload, every_n)
+            self._win.set_statusbar(
+                f"Game {self._games_since_upload}/{every_n} — "
+                + ("uploading when Rocket League closes or limit reached."
+                   if self.config.auto_upload else "auto-upload disabled.")
+            )
+            if self.config.auto_upload and self._games_since_upload >= every_n:
+                logger.info("Game limit reached (%d) — triggering upload", every_n)
+                self._games_since_upload = 0
                 delay = float(getattr(self.config, "post_game_delay", _POST_GAME_DELAY_DEFAULT))
                 threading.Thread(
                     target=self._run_epic_upload,

@@ -193,8 +193,19 @@ class SettingsDialog(tk.Toplevel):
         ttk.Spinbox(
             batch_row,
             textvariable=self._batch_var,
-            from_=1, to=20, increment=1, width=5,
+            from_=1, to=50, increment=1, width=5,
         ).pack(side=tk.LEFT, padx=(6, 0))
+
+        every_n_row = ttk.Frame(beh_frame)
+        every_n_row.pack(anchor="w", pady=(4, 0))
+        ttk.Label(every_n_row, text="Upload after every").pack(side=tk.LEFT)
+        self._every_n_var = tk.IntVar()
+        ttk.Spinbox(
+            every_n_row,
+            textvariable=self._every_n_var,
+            from_=1, to=50, increment=1, width=5,
+        ).pack(side=tk.LEFT, padx=(6, 4))
+        ttk.Label(every_n_row, text="games  (also uploads when Rocket League closes)").pack(side=tk.LEFT)
 
         # ── buttons ──────────────────────────────────────────────────────────
         btn_row = ttk.Frame(self)
@@ -223,6 +234,7 @@ class SettingsDialog(tk.Toplevel):
         self._startup_var.set(self.cfg.launch_at_startup)
         self._delay_var.set(int(self.cfg.post_game_delay))
         self._batch_var.set(int(self.cfg.upload_batch_size))
+        self._every_n_var.set(int(self.cfg.upload_every_n_games))
         self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
@@ -248,6 +260,7 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.launch_at_startup = self._startup_var.get()
         self.cfg.post_game_delay = self._delay_var.get()
         self.cfg.upload_batch_size = self._batch_var.get()
+        self.cfg.upload_every_n_games = self._every_n_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 
