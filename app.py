@@ -297,10 +297,9 @@ class Application:
             client = BallchasingClient(self.config.ballchasing_token)
             ok, name, color = client.verify_token()
             if ok:
-                text = f"Authenticated as {name}" if name else "Authenticated"
-                self.root.after(0, self._win.set_bc_status, True, text, color)
+                self.root.after(0, self._win.set_bc_status, True, name, color)
             else:
-                self.root.after(0, self._win.set_bc_status, False, f"Token error: {name}")
+                self.root.after(0, self._win.set_bc_status, False)
 
         threading.Thread(target=_check, daemon=True, name="bc-verify").start()
 

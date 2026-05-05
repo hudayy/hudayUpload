@@ -113,7 +113,10 @@ class MainWindow:
         self._dot_bc = _Dot(row2)
         self._dot_bc.pack(side=tk.LEFT, padx=(4, 6))
         self._lbl_bc = _ClickableLabel(row2, text="Not configured", anchor="w")
-        self._lbl_bc.pack(side=tk.LEFT, fill=tk.X)
+        self._lbl_bc.pack(side=tk.LEFT)
+        # Second label holds the username, coloured by tier
+        self._lbl_bc_name = ttk.Label(row2, text="", anchor="w")
+        self._lbl_bc_name.pack(side=tk.LEFT)
 
         # Epic Games row
         row3 = ttk.Frame(status_frame)
@@ -208,15 +211,21 @@ class MainWindow:
             self._lbl_rl.set_normal(text or "Disconnected")
         self._update_banner()
 
-    def set_bc_status(self, ok: bool, text: str = "", name_color: str = "") -> None:
+    def set_bc_status(self, ok: bool, name: str = "", name_color: str = "") -> None:
         if ok:
             self._dot_bc.set_color(_CLR_OK)
-            self._lbl_bc.set_normal(text or "Authenticated",
-                                    color=name_color if name_color else _CLR_OK)
+            if name:
+                self._lbl_bc.set_normal("Authenticated as ")
+                self._lbl_bc_name.config(text=name,
+                                         foreground=name_color if name_color else _CLR_OK)
+            else:
+                self._lbl_bc.set_normal("Authenticated")
+                self._lbl_bc_name.config(text="")
         else:
             self._dot_bc.set_color(_CLR_ERR)
             self._lbl_bc.set_action("⚙ No API token — click to open Settings",
                                     self._open_settings)
+            self._lbl_bc_name.config(text="")
         self._update_banner()
 
     def set_epic_status(self, ok: bool, text: str = "") -> None:
