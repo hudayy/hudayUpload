@@ -1,28 +1,13 @@
 """Entry point for hudayUpload."""
-import collections
 import logging
 import sys
 import tkinter as tk
 
 from core.updater import VERSION  # re-exported so other modules can import from here
+from core.log_buffer import log_buffer  # noqa: F401 — imported so the buffer is attached early
 
 _LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
 _LOG_DATE_FMT = "%Y-%m-%d %H:%M:%S"
-
-# In-memory ring buffer — stores up to 2000 formatted log lines
-class _BufferHandler(logging.Handler):
-    def __init__(self, maxlen: int = 2000) -> None:
-        super().__init__()
-        self.records: collections.deque[str] = collections.deque(maxlen=maxlen)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self.records.append(self.format(record))
-        except Exception:
-            self.handleError(record)
-
-log_buffer = _BufferHandler()
-log_buffer.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FMT))
 
 logging.basicConfig(
     level=logging.INFO,

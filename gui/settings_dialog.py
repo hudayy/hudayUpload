@@ -1,4 +1,4 @@
-"""Settings dialog — modal window with native Windows look."""
+"""Settings dialog — tabbed layout."""
 from __future__ import annotations
 
 import threading
@@ -21,13 +21,12 @@ class SettingsDialog(tk.Toplevel):
 
         self.title("Settings")
         self.resizable(False, False)
-        self.grab_set()  # modal
+        self.grab_set()
         self.transient(parent)
 
         self._build()
         self._load_values()
 
-        # Centre over parent
         self.update_idletasks()
         px, py = parent.winfo_x(), parent.winfo_y()
         pw, ph = parent.winfo_width(), parent.winfo_height()
@@ -37,189 +36,166 @@ class SettingsDialog(tk.Toplevel):
     # ── layout ────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        pad = {"padx": 14, "pady": 5}
+        # ── notebook ────────────────────────────────────────────────────────
+        nb = ttk.Notebook(self)
+        nb.pack(fill=tk.BOTH, expand=True, padx=14, pady=(12, 0))
 
-        # ── Ballchasing section ──────────────────────────────────────────────
-        bc_frame = ttk.LabelFrame(self, text="Ballchasing", padding=(10, 6, 10, 10))
-        bc_frame.pack(fill=tk.X, **pad)
+        tab_beh  = ttk.Frame(nb, padding=(12, 10, 12, 12))
+        tab_bc   = ttk.Frame(nb, padding=(12, 10, 12, 12))
+        tab_epic = ttk.Frame(nb, padding=(12, 10, 12, 12))
+        tab_rl   = ttk.Frame(nb, padding=(12, 10, 12, 12))
 
-        ttk.Label(bc_frame, text="API Token").grid(row=0, column=0, sticky="w", pady=3)
-        token_row = ttk.Frame(bc_frame)
-        token_row.grid(row=0, column=1, sticky="ew", pady=3)
-        bc_frame.columnconfigure(1, weight=1)
+        nb.add(tab_beh,  text="  Behaviour  ")
+        nb.add(tab_bc,   text="  Ballchasing  ")
+        nb.add(tab_epic, text="  Epic Games  ")
+        nb.add(tab_rl,   text="  Rocket League  ")
 
-        self._token_var = tk.StringVar()
-        self._token_entry = ttk.Entry(
-            token_row, textvariable=self._token_var, show="•", width=32
-        )
-        self._token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._build_behaviour(tab_beh)
+        self._build_ballchasing(tab_bc)
+        self._build_epic(tab_epic)
+        self._build_rocket_league(tab_rl)
 
-        self._show_token = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            token_row,
-            text="Show",
-            variable=self._show_token,
-            command=self._toggle_token_visibility,
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        # ── bottom bar ───────────────────────────────────────────────────────
+        bottom = ttk.Frame(self)
+        bottom.pack(fill=tk.X, padx=14, pady=(6, 12))
 
-        ttk.Button(
-            bc_frame,
-            text="Get API token ↗",
-            command=lambda: webbrowser.open("https://ballchasing.com/upload"),
-        ).grid(row=1, column=1, sticky="w", pady=(0, 2))
+        ttk.Button(bottom, text="Save",   command=self._save,    width=10).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(bottom, text="Cancel", command=self.destroy,  width=10).pack(side=tk.RIGHT)
+        ttk.Button(bottom, text="Export Logs", command=self._export_logs, width=14).pack(side=tk.LEFT)
 
-        self._bc_status_lbl = ttk.Label(bc_frame, text="", foreground="#107C10")
-        self._bc_status_lbl.grid(row=2, column=0, columnspan=2, sticky="w")
+    # ── tab: Behaviour ────────────────────────────────────────────────────────
 
-        ttk.Button(bc_frame, text="Verify Token", command=self._verify_token).grid(
-            row=2, column=1, sticky="e"
-        )
-
-        ttk.Label(bc_frame, text="Visibility").grid(row=3, column=0, sticky="w", pady=3)
-        self._vis_var = tk.StringVar()
-        ttk.Combobox(
-            bc_frame,
-            textvariable=self._vis_var,
-            values=["public", "unlisted", "private"],
-            state="readonly",
-            width=12,
-        ).grid(row=3, column=1, sticky="w", pady=3)
-
-        # ── Epic Games section ───────────────────────────────────────────────
-        epic_frame = ttk.LabelFrame(self, text="Epic Games Account", padding=(10, 6, 10, 10))
-        epic_frame.pack(fill=tk.X, **pad)
-        epic_frame.columnconfigure(1, weight=1)
-
-        self._epic_status_lbl = ttk.Label(epic_frame, text="Not connected", foreground="#767676")
-        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
-
-        ttk.Button(
-            epic_frame, text="Connect Epic Account", command=self._connect_epic
-        ).grid(row=1, column=0, sticky="w")
-
-        ttk.Button(
-            epic_frame, text="Disconnect", command=self._disconnect_epic
-        ).grid(row=1, column=1, sticky="w", padx=(6, 0))
-
-        # ── Rocket League section ────────────────────────────────────────────
-        rl_frame = ttk.LabelFrame(
-            self, text="Rocket League", padding=(10, 6, 10, 10)
-        )
-        rl_frame.pack(fill=tk.X, **pad)
-        rl_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(rl_frame, text="Install Path").grid(row=0, column=0, sticky="w", pady=3)
-        self._rl_path_var = tk.StringVar()
-        ttk.Entry(rl_frame, textvariable=self._rl_path_var, width=36).grid(
-            row=0, column=1, sticky="ew", pady=3
-        )
-        ttk.Button(rl_frame, text="Browse…", command=self._browse_rl).grid(
-            row=0, column=2, padx=(4, 0), pady=3
-        )
-
-        ttk.Label(rl_frame, text="Replays Folder").grid(row=1, column=0, sticky="w", pady=3)
-        self._replays_var = tk.StringVar()
-        ttk.Entry(rl_frame, textvariable=self._replays_var, width=36).grid(
-            row=1, column=1, sticky="ew", pady=3
-        )
-        ttk.Button(rl_frame, text="Browse…", command=self._browse_replays).grid(
-            row=1, column=2, padx=(4, 0), pady=3
-        )
-
-        ttk.Label(rl_frame, text="Stats API Port").grid(row=2, column=0, sticky="w", pady=3)
-        self._port_var = tk.StringVar()
-        ttk.Entry(rl_frame, textvariable=self._port_var, width=8).grid(
-            row=2, column=1, sticky="w", pady=3
-        )
-
-        # Derived ini path (read-only info, updates as replays folder changes)
-        self._ini_derived_lbl = ttk.Label(
-            rl_frame,
-            text="Stats API ini: (set Replays Folder first)",
-            foreground="#767676",
-            wraplength=400,
-        )
-        self._ini_derived_lbl.grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
-
-        self._ini_status_lbl = ttk.Label(rl_frame, text="", wraplength=400)
-        self._ini_status_lbl.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
-
-        ttk.Button(
-            rl_frame,
-            text="Configure Stats API automatically",
-            command=self._configure_stats_api,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
-        # ── Behaviour section ────────────────────────────────────────────────
-        beh_frame = ttk.LabelFrame(self, text="Behaviour", padding=(10, 6, 10, 10))
-        beh_frame.pack(fill=tk.X, **pad)
-
+    def _build_behaviour(self, parent: ttk.Frame) -> None:
         self._auto_var = tk.BooleanVar()
         ttk.Checkbutton(
-            beh_frame,
-            text="Automatically upload replays when a game ends",
+            parent,
+            text="Automatically upload replays",
             variable=self._auto_var,
         ).pack(anchor="w")
 
         self._minimized_var = tk.BooleanVar()
         ttk.Checkbutton(
-            beh_frame,
+            parent,
             text="Start minimized to system tray",
             variable=self._minimized_var,
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(4, 0))
 
         self._startup_var = tk.BooleanVar()
         ttk.Checkbutton(
-            beh_frame,
+            parent,
             text="Launch hudayUpload when Windows starts",
             variable=self._startup_var,
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(4, 0))
 
-        delay_row = ttk.Frame(beh_frame)
-        delay_row.pack(anchor="w", pady=(6, 0))
+        ttk.Separator(parent, orient="horizontal").pack(fill=tk.X, pady=(10, 8))
+
+        delay_row = ttk.Frame(parent)
+        delay_row.pack(anchor="w")
         ttk.Label(delay_row, text="Delay after game end before fetching replay:").pack(side=tk.LEFT)
         self._delay_var = tk.IntVar()
-        ttk.Spinbox(
-            delay_row,
-            textvariable=self._delay_var,
-            from_=0, to=120, increment=5, width=5,
-        ).pack(side=tk.LEFT, padx=(6, 4))
+        ttk.Spinbox(delay_row, textvariable=self._delay_var, from_=0, to=120, increment=5, width=5).pack(side=tk.LEFT, padx=(6, 4))
         ttk.Label(delay_row, text="seconds").pack(side=tk.LEFT)
 
-        batch_row = ttk.Frame(beh_frame)
-        batch_row.pack(anchor="w", pady=(4, 0))
-        ttk.Label(batch_row, text="Recent matches to upload per pass:").pack(side=tk.LEFT)
-        self._batch_var = tk.IntVar()
-        ttk.Spinbox(
-            batch_row,
-            textvariable=self._batch_var,
-            from_=1, to=50, increment=1, width=5,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-
-        every_n_row = ttk.Frame(beh_frame)
-        every_n_row.pack(anchor="w", pady=(4, 0))
+        every_n_row = ttk.Frame(parent)
+        every_n_row.pack(anchor="w", pady=(8, 0))
         ttk.Label(every_n_row, text="Upload after every").pack(side=tk.LEFT)
         self._every_n_var = tk.IntVar()
-        ttk.Spinbox(
-            every_n_row,
-            textvariable=self._every_n_var,
-            from_=1, to=50, increment=1, width=5,
-        ).pack(side=tk.LEFT, padx=(6, 4))
+        ttk.Spinbox(every_n_row, textvariable=self._every_n_var, from_=1, to=50, increment=1, width=5).pack(side=tk.LEFT, padx=(6, 4))
         ttk.Label(every_n_row, text="games  (also uploads when Rocket League closes)").pack(side=tk.LEFT)
 
-        # ── buttons ──────────────────────────────────────────────────────────
-        btn_row = ttk.Frame(self)
-        btn_row.pack(fill=tk.X, padx=14, pady=(4, 12))
+        batch_row = ttk.Frame(parent)
+        batch_row.pack(anchor="w", pady=(8, 0))
+        ttk.Label(batch_row, text="Matches to upload per pass:").pack(side=tk.LEFT)
+        self._batch_var = tk.IntVar()
+        ttk.Spinbox(batch_row, textvariable=self._batch_var, from_=1, to=50, increment=1, width=5).pack(side=tk.LEFT, padx=(6, 0))
 
-        ttk.Button(btn_row, text="Save", command=self._save, width=10).pack(
-            side=tk.RIGHT, padx=(4, 0)
+    # ── tab: Ballchasing ─────────────────────────────────────────────────────
+
+    def _build_ballchasing(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(1, weight=1)
+
+        ttk.Label(parent, text="API Token").grid(row=0, column=0, sticky="w", pady=3)
+        token_row = ttk.Frame(parent)
+        token_row.grid(row=0, column=1, sticky="ew", pady=3)
+
+        self._token_var = tk.StringVar()
+        self._token_entry = ttk.Entry(token_row, textvariable=self._token_var, show="•", width=32)
+        self._token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._show_token = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            token_row, text="Show",
+            variable=self._show_token,
+            command=self._toggle_token_visibility,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        ttk.Button(
+            parent, text="Get API token ↗",
+            command=lambda: webbrowser.open("https://ballchasing.com/upload"),
+        ).grid(row=1, column=1, sticky="w", pady=(0, 2))
+
+        self._bc_status_lbl = ttk.Label(parent, text="")
+        self._bc_status_lbl.grid(row=2, column=0, columnspan=2, sticky="w")
+
+        ttk.Button(parent, text="Verify Token", command=self._verify_token).grid(
+            row=2, column=1, sticky="e"
         )
-        ttk.Button(btn_row, text="Cancel", command=self.destroy, width=10).pack(
-            side=tk.RIGHT
+
+        ttk.Label(parent, text="Visibility").grid(row=3, column=0, sticky="w", pady=(10, 3))
+        self._vis_var = tk.StringVar()
+        ttk.Combobox(
+            parent, textvariable=self._vis_var,
+            values=["public", "unlisted", "private"],
+            state="readonly", width=12,
+        ).grid(row=3, column=1, sticky="w", pady=(10, 3))
+
+    # ── tab: Epic Games ───────────────────────────────────────────────────────
+
+    def _build_epic(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(1, weight=1)
+
+        self._epic_status_lbl = ttk.Label(parent, text="Not connected", foreground="#9E9E9E")
+        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Button(parent, text="Connect Epic Account", command=self._connect_epic).grid(
+            row=1, column=0, sticky="w"
         )
-        ttk.Button(btn_row, text="Export Logs", command=self._export_logs, width=12).pack(
-            side=tk.LEFT
+        ttk.Button(parent, text="Disconnect", command=self._disconnect_epic).grid(
+            row=1, column=1, sticky="w", padx=(6, 0)
         )
+
+    # ── tab: Rocket League ────────────────────────────────────────────────────
+
+    def _build_rocket_league(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(1, weight=1)
+
+        ttk.Label(parent, text="Install Path").grid(row=0, column=0, sticky="w", pady=3)
+        self._rl_path_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self._rl_path_var, width=36).grid(row=0, column=1, sticky="ew", pady=3)
+        ttk.Button(parent, text="Browse…", command=self._browse_rl).grid(row=0, column=2, padx=(4, 0), pady=3)
+
+        ttk.Label(parent, text="Replays Folder").grid(row=1, column=0, sticky="w", pady=3)
+        self._replays_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self._replays_var, width=36).grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Button(parent, text="Browse…", command=self._browse_replays).grid(row=1, column=2, padx=(4, 0), pady=3)
+
+        ttk.Label(parent, text="Stats API Port").grid(row=2, column=0, sticky="w", pady=3)
+        self._port_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self._port_var, width=8).grid(row=2, column=1, sticky="w", pady=3)
+
+        self._ini_derived_lbl = ttk.Label(
+            parent, text="Stats API ini: (set Replays Folder first)",
+            foreground="#9E9E9E", wraplength=400,
+        )
+        self._ini_derived_lbl.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        self._ini_status_lbl = ttk.Label(parent, text="", wraplength=400)
+        self._ini_status_lbl.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+        ttk.Button(
+            parent, text="Configure Stats API automatically",
+            command=self._configure_stats_api,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # ── load / save ──────────────────────────────────────────────────────────
 
@@ -250,17 +226,17 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Invalid Port", "Port must be a number between 1 and 65535.", parent=self)
             return
 
-        self.cfg.ballchasing_token = self._token_var.get().strip()
+        self.cfg.ballchasing_token      = self._token_var.get().strip()
         self.cfg.ballchasing_visibility = self._vis_var.get()
-        self.cfg.rl_install_path = self._rl_path_var.get().strip()
-        self.cfg.replays_path = self._replays_var.get().strip()
-        self.cfg.stats_api_port = port
-        self.cfg.auto_upload = self._auto_var.get()
-        self.cfg.start_minimized = self._minimized_var.get()
-        self.cfg.launch_at_startup = self._startup_var.get()
-        self.cfg.post_game_delay = self._delay_var.get()
-        self.cfg.upload_batch_size = self._batch_var.get()
-        self.cfg.upload_every_n_games = self._every_n_var.get()
+        self.cfg.rl_install_path        = self._rl_path_var.get().strip()
+        self.cfg.replays_path           = self._replays_var.get().strip()
+        self.cfg.stats_api_port         = port
+        self.cfg.auto_upload            = self._auto_var.get()
+        self.cfg.start_minimized        = self._minimized_var.get()
+        self.cfg.launch_at_startup      = self._startup_var.get()
+        self.cfg.post_game_delay        = self._delay_var.get()
+        self.cfg.upload_batch_size      = self._batch_var.get()
+        self.cfg.upload_every_n_games   = self._every_n_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 
@@ -284,17 +260,14 @@ class SettingsDialog(tk.Toplevel):
             self._refresh_ini_status()
 
     def _validate_rl_path(self, path: str) -> None:
-        from pathlib import Path
         p = Path(path)
-        tag = p / "TAGame" / "Config"
-        if not tag.exists():
+        if not (p / "TAGame" / "Config").exists():
             self._ini_status_lbl.config(
                 text=(
                     f"⚠ TAGame\\Config\\ not found inside:\n{path}\n"
-                    "This may be the wrong folder. Look for the folder that\n"
-                    "contains TAGame\\ and select that."
+                    "This may be the wrong folder."
                 ),
-                foreground="#CA5010",
+                foreground="#FF9800",
             )
 
     def _browse_replays(self) -> None:
@@ -309,9 +282,9 @@ class SettingsDialog(tk.Toplevel):
     def _verify_token(self) -> None:
         token = self._token_var.get().strip()
         if not token:
-            self._bc_status_lbl.config(text="Enter a token first.", foreground="#D13438")
+            self._bc_status_lbl.config(text="Enter a token first.", foreground="#EF5350")
             return
-        self._bc_status_lbl.config(text="Verifying…", foreground="#767676")
+        self._bc_status_lbl.config(text="Verifying…", foreground="#9E9E9E")
         self.update()
 
         def _check():
@@ -322,7 +295,7 @@ class SettingsDialog(tk.Toplevel):
                 self.after(0, lambda: self._bc_status_lbl.config(text=text, foreground=color))
             else:
                 self.after(0, lambda: self._bc_status_lbl.config(
-                    text=f"❌ Invalid: {name}", foreground="#D13438"
+                    text=f"❌ Invalid: {name}", foreground="#EF5350"
                 ))
 
         threading.Thread(target=_check, daemon=True).start()
@@ -332,78 +305,62 @@ class SettingsDialog(tk.Toplevel):
 
         ini = self._current_ini_path()
         if ini is None:
-            messagebox.showwarning(
-                "Missing paths",
-                "Set the Install Path (or Replays Folder) first.",
-                parent=self,
-            )
+            messagebox.showwarning("Missing paths", "Set the Install Path (or Replays Folder) first.", parent=self)
             return
 
-        # Update the path label so the user can see exactly where we're writing
-        self._ini_derived_lbl.config(text=f"Stats API ini → {ini}", foreground="#0078D4")
+        self._ini_derived_lbl.config(text=f"Stats API ini → {ini}", foreground="#42A5F5")
 
         try:
             enable_stats_api(ini)
             content = read_ini_text(ini)
             self._ini_status_lbl.config(
                 text=f"✅ Written to:\n{ini}\n\n{content.strip()}\n\nRestart Rocket League to apply.",
-                foreground="#107C10",
+                foreground="#4CAF50",
             )
         except PermissionError:
             self._ini_status_lbl.config(
                 text=(
                     f"❌ Permission denied writing to:\n{ini}\n\n"
-                    "Try running hudayUpload as Administrator, or edit the file manually:\n"
-                    f"{ini}"
+                    "Try running hudayUpload as Administrator."
                 ),
-                foreground="#D13438",
+                foreground="#EF5350",
             )
         except Exception as exc:
             self._ini_status_lbl.config(
                 text=f"❌ Could not write to:\n{ini}\n\n{exc}",
-                foreground="#D13438",
+                foreground="#EF5350",
             )
 
     def _refresh_ini_status(self) -> None:
         from core.rl_setup import check_stats_api_enabled, read_ini_text
         ini = self._current_ini_path()
         if ini is None:
-            self._ini_derived_lbl.config(
-                text="Stats API ini: set Replays Folder first",
-                foreground="#767676",
-            )
-            self._ini_status_lbl.config(text="", foreground="#767676")
+            self._ini_derived_lbl.config(text="Stats API ini: set Replays Folder first", foreground="#9E9E9E")
+            self._ini_status_lbl.config(text="", foreground="#9E9E9E")
             return
 
-        self._ini_derived_lbl.config(
-            text=f"Stats API ini → {ini}",
-            foreground="#0078D4",
-        )
+        self._ini_derived_lbl.config(text=f"Stats API ini → {ini}", foreground="#42A5F5")
 
         if check_stats_api_enabled(ini):
             content = read_ini_text(ini)
             self._ini_status_lbl.config(
                 text=f"✅ Stats API enabled:\n{content.strip()}",
-                foreground="#107C10",
+                foreground="#4CAF50",
             )
         else:
             self._ini_status_lbl.config(
                 text="⚠ Stats API not enabled — click 'Configure Stats API automatically'.",
-                foreground="#CA5010",
+                foreground="#FF9800",
             )
 
     def _refresh_epic_status(self) -> None:
         name = self.cfg.epic_display_name.strip()
         if self.cfg.has_epic_auth and name:
-            self._epic_status_lbl.config(
-                text=f"Connected as {name}", foreground="#107C10"
-            )
+            self._epic_status_lbl.config(text=f"Connected as {name}", foreground="#4CAF50")
         elif self.cfg.has_epic_auth:
-            self._epic_status_lbl.config(
-                text="Connected (display name unknown)", foreground="#107C10"
-            )
+            self._epic_status_lbl.config(text="Connected (display name unknown)", foreground="#4CAF50")
         else:
-            self._epic_status_lbl.config(text="Not connected", foreground="#767676")
+            self._epic_status_lbl.config(text="Not connected", foreground="#9E9E9E")
 
     def _connect_epic(self) -> None:
         from core.epic_auth import EpicClient, EpicAuthError
@@ -421,7 +378,7 @@ class SettingsDialog(tk.Toplevel):
             dlg,
             text=(
                 "A page opened in your browser.\n\n"
-                'Log in, then copy the Authorization Code shown on the page —\n'
+                "Log in, then copy the Authorization Code shown on the page —\n"
                 "this window will close automatically."
             ),
             justify="left",
@@ -430,7 +387,7 @@ class SettingsDialog(tk.Toplevel):
         ).pack(fill=tk.X)
 
         status_lbl = ttk.Label(
-            dlg, text="Watching clipboard for code…", foreground="#767676",
+            dlg, text="Watching clipboard for code…", foreground="#9E9E9E",
             padding=(14, 0, 14, 8),
         )
         status_lbl.pack(fill=tk.X)
@@ -453,9 +410,7 @@ class SettingsDialog(tk.Toplevel):
             if not code or code in _seen_clips:
                 return
             _seen_clips.add(code)
-            dlg.after(0, lambda: status_lbl.config(
-                text="Code detected — connecting…", foreground="#767676"
-            ))
+            dlg.after(0, lambda: status_lbl.config(text="Code detected — connecting…", foreground="#9E9E9E"))
 
             def _do():
                 try:
@@ -466,29 +421,24 @@ class SettingsDialog(tk.Toplevel):
                         self.cfg.epic_display_name  = data["display_name"]
                         self.cfg.save()
                         self._refresh_epic_status()
+                        self.app._refresh_epic_status_ui()
                         dlg.destroy()
                     dlg.after(0, _ok)
                 except EpicAuthError as exc:
-                    _seen_clips.discard(code)  # allow retry with same code
+                    _seen_clips.discard(code)
                     msg = str(exc)
-                    dlg.after(0, lambda m=msg: status_lbl.config(
-                        text=f"❌ {m}", foreground="#D13438"
-                    ))
+                    dlg.after(0, lambda m=msg: status_lbl.config(text=f"❌ {m}", foreground="#EF5350"))
                 except Exception as exc:
                     _seen_clips.discard(code)
                     msg = str(exc)
-                    dlg.after(0, lambda m=msg: status_lbl.config(
-                        text=f"❌ Unexpected error: {m}", foreground="#D13438"
-                    ))
+                    dlg.after(0, lambda m=msg: status_lbl.config(text=f"❌ Unexpected error: {m}", foreground="#EF5350"))
 
             threading.Thread(target=_do, daemon=True).start()
 
         def _extract_code(clip: str) -> str:
-            """Return the auth code from a plain code string or the full JSON blob."""
             clip = clip.strip()
             if not clip:
                 return ""
-            # Handle the full JSON Epic returns e.g. {"authorizationCode":"abc123",...}
             if clip.startswith("{"):
                 try:
                     import json as _json
@@ -497,7 +447,6 @@ class SettingsDialog(tk.Toplevel):
                     return code.strip()
                 except Exception:
                     return ""
-            # Plain code — alphanumeric + hyphens, max 64 chars
             if len(clip) <= 64 and clip.replace("-", "").isalnum():
                 return clip
             return ""
@@ -522,8 +471,8 @@ class SettingsDialog(tk.Toplevel):
         dlg.after(500, _poll_clipboard)
 
     def _export_logs(self) -> None:
-        import main as _main
-        lines = list(_main.log_buffer.records)
+        from core.log_buffer import log_buffer
+        lines = list(log_buffer.records)
         if not lines:
             messagebox.showinfo("Export Logs", "No log entries yet.", parent=self)
             return
@@ -549,9 +498,9 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.epic_display_name  = ""
         self.cfg.save()
         self._refresh_epic_status()
+        self.app._refresh_epic_status_ui()
 
     def _current_ini_path(self) -> Path | None:
-        """Return the ini path, preferring the install dir over the docs dir."""
         install = self._rl_path_var.get().strip()
         if install:
             return Path(install) / "TAGame" / "Config" / "DefaultStatsAPI.ini"
@@ -564,15 +513,12 @@ class SettingsDialog(tk.Toplevel):
 # ── startup registry helper ───────────────────────────────────────────────────
 
 def _apply_startup(enable: bool) -> None:
-    """Add or remove hudayUpload from the Windows startup registry key."""
     import sys
     import winreg
 
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     app_name = "hudayUpload"
 
-    # Build the command: if running as a frozen exe use the exe path,
-    # otherwise use 'pythonw main.py' so no console window appears.
     if getattr(sys, "frozen", False):
         cmd = f'"{sys.executable}"'
     else:
@@ -583,9 +529,7 @@ def _apply_startup(enable: bool) -> None:
         cmd = f'"{pythonw}" "{main_py}"'
 
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
-        ) as key:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
             if enable:
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
             else:
