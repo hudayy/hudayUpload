@@ -187,6 +187,13 @@ class MainWindow:
         ).pack(side=tk.LEFT)
 
         ttk.Button(
+            toolbar,
+            text="Privacy Policy",
+            command=lambda: webbrowser.open("https://huday.net/privacy-policy.html"),
+            width=14,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Button(
             toolbar, text="Minimize to Tray", command=self._minimize_to_tray, width=16
         ).pack(side=tk.RIGHT)
 
