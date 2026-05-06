@@ -169,7 +169,7 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
         except Exception:
             break
         if not key or key == "None":
-            none_pos = key_start  # remember where "None" starts
+            none_pos = key_start
             break
 
         try:
@@ -183,8 +183,6 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
         value_size = struct.unpack_from("<I", data, pos)[0]
         pos += 8
         val_end = pos + value_size
-        if val_end > len(data):
-            val_end = len(data)
 
         if key == "ReplayName" and type_name == "StrProperty":
             # ── UPDATE existing property ──────────────────────────────────────
@@ -206,7 +204,20 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
             logger.info("ReplayName updated in replay binary (%+d bytes): %r", delta, name)
             return bytes(new_data)
 
-        pos = val_end  # skip to next property
+        # Advance pos past this property's value — must mirror _parse() logic
+        # because BoolProperty stores its 1-byte value outside of value_size.
+        try:
+            if type_name == "BoolProperty":
+                pos = val_end + 1
+            elif type_name in ("StrProperty", "NameProperty"):
+                _, pos = _read_str(data, pos)
+            elif type_name == "ByteProperty":
+                _, pos = _read_str(data, pos)
+                _, pos = _read_str(data, pos)
+            else:
+                pos = val_end
+        except Exception:
+            pos = val_end
 
     # ── INSERT new property before "None" terminator ──────────────────────────
     # Fresh replays that were never named in-game simply omit ReplayName.
