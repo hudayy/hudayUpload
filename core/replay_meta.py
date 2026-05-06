@@ -1,18 +1,18 @@
-"""Minimal Rocket League .replay header parser.
+"""Minimal Rocket League .replay header parser + writer.
 
 Reads only the key-value property section at the top of the file and stops
 before the frame data, so it is fast and requires no external libraries.
 
 Typical properties extracted:
-    Date        "2026-04-28:0-9-0"  (YYYY-MM-DD:H-M-S, no zero-padding)
-    PlayerName  "huday"
-    PlayerTeam  0 or 1
-    Team0Score  3
-    Team1Score  1
-    Playlist    11  (same IDs as PsyNet — Ranked Doubles, etc.)
-    TeamSize    2
-    ReplayName  ""  (user-set label, almost always empty)
-    Id          "934BAAB6..."
+    Date               "2026-04-28 00-09-00"  (YYYY-MM-DD HH-MM-SS, zero-padded)
+    PrimaryPlayerTeam  0 or 1  (which team the recording player is on)
+    WinningTeam        0 or 1
+    Team0Score         3
+    Team1Score         1
+    Playlist           11  (same IDs as PsyNet — Ranked Doubles, etc.)
+    TeamSize           2
+    ReplayName         ""  (user-set label, almost always empty on fresh replays)
+    MatchGUID          "934BAAB6..."
 """
 from __future__ import annotations
 
@@ -74,14 +74,11 @@ def build_title(props: dict[str, Any], fallback_name: str = "") -> str:
             pass
 
     # ── player name ──────────────────────────────────────────────────────────
-    # Key is "PlayerName" if injected externally; replay file itself stores it
-    # inside the PlayerStats ArrayProperty (not parsed here).
     name = (props.get("PlayerName") or fallback_name or "").strip()
     if name:
         parts.append(name)
 
     # ── game mode ────────────────────────────────────────────────────────────
-    # "Playlist" is not in the replay header; caller should inject it from PsyNet.
     playlist_id = int(props.get("Playlist") or 0)
     mode = PLAYLIST_NAMES.get(playlist_id, "")
     if mode:
@@ -107,10 +104,102 @@ def build_title(props: dict[str, Any], fallback_name: str = "") -> str:
             )
 
     title = " ".join(parts)
-    logger.debug("Built replay title: %r  (props: Date=%r Playlist=%r PlayerTeam=%r scores=%d-%d)",
-                 title, props.get("Date"), props.get("Playlist"),
-                 props.get("PlayerTeam"), t0, t1)
+    logger.debug(
+        "Built replay title: %r  (Date=%r Playlist=%r PrimaryPlayerTeam=%r WinningTeam=%r)",
+        title, props.get("Date"), props.get("Playlist"),
+        props.get("PrimaryPlayerTeam"), props.get("WinningTeam"),
+    )
     return title
+
+
+def write_replay_name(data: bytes, name: str) -> bytes:
+    """Return a copy of the replay bytes with the ReplayName property set to *name*.
+
+    Locates the ReplayName StrProperty in the header, replaces its string value,
+    then recalculates header_size (bytes 0-3) and the CRC (bytes 4-7) so the
+    file remains valid. Returns the original bytes unchanged on any error.
+    """
+    try:
+        return _inject_replay_name(data, name)
+    except Exception as exc:
+        logger.warning("Could not write ReplayName to replay binary: %s", exc)
+        return data
+
+
+# ── CRC ───────────────────────────────────────────────────────────────────────
+
+def _crc32_rl(body: bytes) -> int:
+    """CRC32 variant used by Rocket League replay files.
+
+    Polynomial 0x04C11DB7, init 0x10340DFE, XorOut 0xFFFFFFFF,
+    no input/output reflection.  Verified against real replay files.
+    """
+    crc = 0x10340DFE
+    for byte in body:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) if (crc & 0x80000000) else (crc << 1)
+            crc &= 0xFFFFFFFF
+    return crc ^ 0xFFFFFFFF
+
+
+# ── write internals ───────────────────────────────────────────────────────────
+
+def _inject_replay_name(data: bytes, name: str) -> bytes:
+    engine_ver   = struct.unpack_from("<I", data, 8)[0]
+    licensee_ver = struct.unpack_from("<I", data, 12)[0]
+    pos = 16
+    if engine_ver >= 868 and licensee_ver >= 18:
+        pos += 4
+
+    _, pos = _read_str(data, pos)  # type name string
+
+    while pos < len(data) - 8:
+        key, pos = _read_str(data, pos)
+        if not key or key == "None":
+            break
+
+        type_name, pos = _read_str(data, pos)
+
+        if pos + 8 > len(data):
+            break
+        value_size_pos = pos                          # position of the 4-byte value_size field
+        value_size = struct.unpack_from("<I", data, pos)[0]
+        pos += 8
+        val_end = pos + value_size
+
+        if key == "ReplayName" and type_name == "StrProperty":
+            old_str_start = pos
+            _, old_str_end = _read_str(data, pos)
+
+            # Build the replacement: 4-byte length prefix + UTF-8 content + null terminator
+            encoded      = name.encode("utf-8") + b"\x00"
+            new_str_bytes = struct.pack("<i", len(encoded)) + encoded
+            old_str_bytes = data[old_str_start:old_str_end]
+            delta         = len(new_str_bytes) - len(old_str_bytes)
+
+            # Splice new string into the file
+            new_data = bytearray(data[:old_str_start] + new_str_bytes + data[old_str_end:])
+
+            # Fix the StrProperty's value_size in the 8-byte sub-header
+            struct.pack_into("<I", new_data, value_size_pos, len(new_str_bytes))
+
+            # Fix the top-level header_size (bytes 0-3)
+            old_header_size = struct.unpack_from("<I", new_data, 0)[0]
+            new_header_size = old_header_size + delta
+            struct.pack_into("<I", new_data, 0, new_header_size)
+
+            # Recalculate and write the CRC (bytes 4-7)
+            new_crc = _crc32_rl(bytes(new_data[8 : 8 + new_header_size]))
+            struct.pack_into("<I", new_data, 4, new_crc)
+
+            logger.info("ReplayName written to replay binary (%+d bytes): %r", delta, name)
+            return bytes(new_data)
+
+        pos = val_end  # skip to next property
+
+    logger.warning("ReplayName property not found in replay header — file unchanged")
+    return data
 
 
 # ── parser internals ──────────────────────────────────────────────────────────
@@ -140,21 +229,14 @@ def _parse(data: bytes) -> dict[str, Any]:
     if len(data) < 16:
         return {}
 
-    # Header layout (all little-endian):
-    #   0-3   header_size   (not needed)
-    #   4-7   CRC
-    #   8-11  engine_version
-    #  12-15  licensee_version
     engine_ver   = struct.unpack_from("<I", data, 8)[0]
     licensee_ver = struct.unpack_from("<I", data, 12)[0]
     pos = 16
 
-    # Net version is present when engine >= 868 and licensee >= 18
     if engine_ver >= 868 and licensee_ver >= 18:
         pos += 4
 
-    # Type name string (e.g. "TAGame.Replay_Soccar_TA") — skip it
-    _, pos = _read_str(data, pos)
+    _, pos = _read_str(data, pos)  # type name string
 
     props: dict[str, Any] = {}
 
@@ -165,12 +247,11 @@ def _parse(data: bytes) -> dict[str, Any]:
 
         type_name, pos = _read_str(data, pos)
 
-        # 8-byte property sub-header: value_size (u32) + array_index (u32)
         if pos + 8 > len(data):
             break
         value_size = struct.unpack_from("<I", data, pos)[0]
         pos += 8
-        val_end = pos + value_size  # fallback jump target for unknown types
+        val_end = pos + value_size
 
         try:
             if type_name == "IntProperty":
@@ -186,14 +267,12 @@ def _parse(data: bytes) -> dict[str, Any]:
                 pos += 4
 
             elif type_name == "BoolProperty":
-                # value_size is 0; actual value is a single byte after the sub-header
                 props[key] = bool(struct.unpack_from("<B", data, pos)[0])
                 pos += 1
 
             elif type_name == "ByteProperty":
-                # Two strings: enum-type key + enum value
-                _, pos = _read_str(data, pos)   # e.g. "OnlinePlatform"
-                val, pos = _read_str(data, pos) # e.g. "OnlinePlatform_Epic"
+                _, pos   = _read_str(data, pos)
+                val, pos = _read_str(data, pos)
                 props[key] = val
 
             elif type_name == "QWordProperty":
@@ -201,10 +280,9 @@ def _parse(data: bytes) -> dict[str, Any]:
                 pos += 8
 
             else:
-                # ArrayProperty or unknown — skip using the declared size
                 pos = val_end
 
         except Exception:
-            pos = val_end  # recover and continue
+            pos = val_end
 
     return props

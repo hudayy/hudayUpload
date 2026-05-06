@@ -133,7 +133,7 @@ class EpicClient:
                     # Extra fields for building a human-readable title.
                     # Field names verified against raw entry dump in logs.
                     "match_time":     match.get("Created", ""),
-                    "playlist_id":    match.get("PlaylistID", 0),
+                    "playlist_id":    match.get("Playlist", 0),
                     "player_team_id": entry.get("PlayerTeamID", -1),
                     "teams":          match.get("Teams", []),
                     # Keep the full raw entry so app.py can fish out any field

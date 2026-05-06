@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 _GAME_END_EVENTS = {"MatchEnded", "PodiumStart"}
 
+# Track the last seen MatchGuid so we only post match_state on GUID change
+_last_match_guid: str = ""
+
 
 class StatsWatcher:
     """Wraps the RL Stats API in a daemon asyncio thread.
@@ -146,6 +149,7 @@ class StatsWatcher:
                 self._handle_message(obj)
 
     def _handle_message(self, obj: dict) -> None:
+        global _last_match_guid
         event = obj.get("Event", "")
         data = obj.get("Data", {})
         if isinstance(data, str):
@@ -159,6 +163,34 @@ class StatsWatcher:
         if event in _GAME_END_EVENTS:
             logger.info("Game ended — triggering upload (event=%s)", event)
             self._post({"type": "game_ended", "event": event, "data": data})
+
+        elif event == "UpdateState":
+            # Extract match GUID — only post when it changes to avoid flooding
+            game = data.get("Game", {}) if isinstance(data, dict) else {}
+            guid = game.get("MatchGuid", "")
+            if not guid or guid == _last_match_guid:
+                return
+            _last_match_guid = guid
+
+            players = []
+            for p in game.get("Players", []):
+                name    = p.get("Name", "")
+                team    = p.get("Team", -1)
+                primary = p.get("Primary", False)
+                if name:
+                    players.append({"name": name, "team": team, "primary": primary})
+
+            teams = []
+            for t in game.get("Teams", []):
+                teams.append({"team_num": t.get("TeamNum", -1), "score": t.get("Score", 0)})
+
+            logger.debug("UpdateState — MatchGuid=%s players=%d teams=%s", guid, len(players), teams)
+            self._post({
+                "type":       "match_state",
+                "match_guid": guid,
+                "players":    players,
+                "teams":      teams,
+            })
 
     def _post(self, msg: dict) -> None:
         self.event_queue.put_nowait(msg)

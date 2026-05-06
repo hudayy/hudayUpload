@@ -9,7 +9,7 @@ from typing import Optional
 
 from core.config import Config
 from core.epic_auth import EpicAuthError, EpicClient
-from core.replay_meta import build_title, parse_header
+from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
 from core.updater import check_for_update, download_and_install
 from core.uploader import BallchasingClient, UploadResult
@@ -36,6 +36,8 @@ class Application:
         self._last_game_end: float = 0.0
         # Count of games played since the last upload batch
         self._games_since_upload: int = 0
+        # Match state data from UpdateState events, keyed by MatchGuid
+        self._match_states: dict[str, dict] = {}
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -53,6 +55,7 @@ class Application:
         self._start_event_pump()
         self._verify_bc_token_async()
         self._check_for_update_async()
+        self._write_stats_api_tickrate()
 
     def quit(self) -> None:
         self._watcher.stop()
@@ -129,6 +132,14 @@ class Application:
                 self._win.set_statusbar("Rocket League not running — waiting…")
         elif t == "connecting":
             self._win.set_rl_status(None, "Waiting for Rocket League…")
+        elif t == "match_state":
+            guid = msg.get("match_guid", "")
+            if guid:
+                self._match_states[guid] = {
+                    "players": msg.get("players", []),
+                    "teams":   msg.get("teams", []),
+                }
+                logger.debug("Stored match_state for %s", guid)
         elif t == "game_ended":
             now = time.monotonic()
             if now - self._last_game_end < 60:
@@ -263,7 +274,32 @@ class Application:
                 if not props.get("PlayerName"):
                     props["PlayerName"] = self._psynet_player_name(entry)
 
+                # Supplement with Stats API UpdateState data if available
+                state = self._match_states.get(guid)
+                if state:
+                    if not isinstance(props.get("PrimaryPlayerTeam"), int):
+                        my_name = (self.config.epic_display_name or "").rstrip(".").strip().lower()
+                        for p in state["players"]:
+                            if p.get("name", "").strip().lower() == my_name or p.get("primary"):
+                                props["PrimaryPlayerTeam"] = p["team"]
+                                break
+                    if not isinstance(props.get("WinningTeam"), int):
+                        teams = state.get("teams", [])
+                        if teams:
+                            best = max(teams, key=lambda t: t.get("score", 0))
+                            props["WinningTeam"] = best.get("team_num", 0)
+                    for t in state.get("teams", []):
+                        tn = t.get("team_num", -1)
+                        if tn == 0 and not props.get("Team0Score"):
+                            props["Team0Score"] = t.get("score", 0)
+                        elif tn == 1 and not props.get("Team1Score"):
+                            props["Team1Score"] = t.get("score", 0)
+
                 title = build_title(props, fallback_name=self.config.epic_display_name or "")
+
+                # Write the title into the replay's ReplayName binary property
+                if title:
+                    data = write_replay_name(data, title)
 
                 # Use the title as the filename — ballchasing sets the replay's
                 # display name from the uploaded filename, no API PATCH needed.
@@ -284,6 +320,24 @@ class Application:
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
+
+    def _write_stats_api_tickrate(self) -> None:
+        """Set PacketSendRate=1 in DefaultStatsAPI.ini if not already set."""
+        try:
+            ini = self.config.ini_path()
+            if ini is None or not ini.exists():
+                return
+            text = ini.read_text(encoding="utf-8")
+            if "PacketSendRate=1" in text:
+                return  # already correct
+            import re
+            new_text = re.sub(r"PacketSendRate=\d+", "PacketSendRate=1", text)
+            if new_text == text:
+                return  # key not found — don't touch file
+            ini.write_text(new_text, encoding="utf-8")
+            logger.info("Set PacketSendRate=1 in %s", ini)
+        except Exception as exc:
+            logger.warning("Could not update DefaultStatsAPI.ini: %s", exc)
 
     def _psynet_player_name(self, entry: dict) -> str:
         """Return the in-game player name from the PsyNet match entry.
