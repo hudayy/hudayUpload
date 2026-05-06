@@ -411,3 +411,29 @@ def _apply_theme(root: tk.Tk) -> None:
     style.configure("TLabelframe.Label",font=("Segoe UI", 9, "bold"))
     style.configure("Treeview",         font=("Segoe UI", 9), rowheight=22)
     style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
+
+    # Apply Windows dark title bar (requires Windows 10 build 18985+ / Windows 11)
+    _set_dark_titlebar(root)
+
+
+def _set_dark_titlebar(window: tk.Tk | tk.Toplevel) -> None:
+    """Use the DWM API to enable the dark title bar on a tkinter window."""
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20  # works on Win10 20H1+ and Win11
+
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if hwnd == 0:
+            hwnd = window.winfo_id()
+
+        value = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+    except Exception:
+        pass  # silently skip on unsupported OS versions

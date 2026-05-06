@@ -27,6 +27,10 @@ class SettingsDialog(tk.Toplevel):
         self._build()
         self._load_values()
 
+        # Dark title bar to match the app theme
+        from gui.main_window import _set_dark_titlebar
+        self.after(10, lambda: _set_dark_titlebar(self))
+
         self.update_idletasks()
         px, py = parent.winfo_x(), parent.winfo_y()
         pw, ph = parent.winfo_width(), parent.winfo_height()
