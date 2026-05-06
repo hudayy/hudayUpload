@@ -122,7 +122,9 @@ def write_replay_name(data: bytes, name: str) -> bytes:
     try:
         return _inject_replay_name(data, name)
     except Exception as exc:
-        logger.warning("Could not write ReplayName to replay binary: %s", exc)
+        import traceback
+        logger.warning("Could not write ReplayName to replay binary: %s\n%s",
+                       exc, traceback.format_exc())
         return data
 
 
@@ -155,11 +157,19 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
     _, pos = _read_str(data, pos)  # type name string
 
     while pos < len(data) - 8:
-        key, pos = _read_str(data, pos)
+        # Wrap key + type_name reads in try/except so a misaligned val_end
+        # on a previous property doesn't abort the whole walk.
+        try:
+            key, pos = _read_str(data, pos)
+        except Exception:
+            break
         if not key or key == "None":
             break
 
-        type_name, pos = _read_str(data, pos)
+        try:
+            type_name, pos = _read_str(data, pos)
+        except Exception:
+            break
 
         if pos + 8 > len(data):
             break
@@ -167,12 +177,14 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
         value_size = struct.unpack_from("<I", data, pos)[0]
         pos += 8
         val_end = pos + value_size
+        if val_end > len(data):
+            val_end = len(data)
 
         if key == "ReplayName" and type_name == "StrProperty":
             old_str_start = pos
-            # Use val_end (from the property's value_size sub-header field) as
-            # the authoritative end of the old string bytes — this avoids any
-            # _read_str parse error on unusual or empty string encodings.
+            # Use val_end (from the property's value_size sub-header) as the
+            # authoritative span of the old string bytes — avoids _read_str
+            # parse errors on unusual or zero-length string encodings.
             old_str_end = val_end
 
             # Build the replacement: 4-byte length prefix + UTF-8 content + null terminator
