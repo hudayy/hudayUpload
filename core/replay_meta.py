@@ -122,9 +122,7 @@ def write_replay_name(data: bytes, name: str) -> bytes:
     try:
         return _inject_replay_name(data, name)
     except Exception as exc:
-        import traceback
-        logger.warning("Could not write ReplayName to replay binary: %s\n%s",
-                       exc, traceback.format_exc())
+        logger.warning("Could not write ReplayName to replay binary: %s", exc)
         return data
 
 
@@ -147,6 +145,12 @@ def _crc32_rl(body: bytes) -> int:
 
 # ── write internals ───────────────────────────────────────────────────────────
 
+def _prop_str(s: str) -> bytes:
+    """Encode a property key/type as a length-prefixed null-terminated ASCII string."""
+    enc = s.encode("latin-1") + b"\x00"
+    return struct.pack("<i", len(enc)) + enc
+
+
 def _inject_replay_name(data: bytes, name: str) -> bytes:
     engine_ver   = struct.unpack_from("<I", data, 8)[0]
     licensee_ver = struct.unpack_from("<I", data, 12)[0]
@@ -156,14 +160,16 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
 
     _, pos = _read_str(data, pos)  # type name string
 
+    none_pos: int = -1  # byte offset of the "None" terminator key, if we reach it
+
     while pos < len(data) - 8:
-        # Wrap key + type_name reads in try/except so a misaligned val_end
-        # on a previous property doesn't abort the whole walk.
+        key_start = pos
         try:
             key, pos = _read_str(data, pos)
         except Exception:
             break
         if not key or key == "None":
+            none_pos = key_start  # remember where "None" starts
             break
 
         try:
@@ -173,7 +179,7 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
 
         if pos + 8 > len(data):
             break
-        value_size_pos = pos                          # position of the 4-byte value_size field
+        value_size_pos = pos
         value_size = struct.unpack_from("<I", data, pos)[0]
         pos += 8
         val_end = pos + value_size
@@ -181,40 +187,52 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
             val_end = len(data)
 
         if key == "ReplayName" and type_name == "StrProperty":
+            # ── UPDATE existing property ──────────────────────────────────────
             old_str_start = pos
-            # Use val_end (from the property's value_size sub-header) as the
-            # authoritative span of the old string bytes — avoids _read_str
-            # parse errors on unusual or zero-length string encodings.
-            old_str_end = val_end
+            old_str_end   = val_end
 
-            # Build the replacement: 4-byte length prefix + UTF-8 content + null terminator
-            encoded      = name.encode("utf-8") + b"\x00"
+            encoded       = name.encode("utf-8") + b"\x00"
             new_str_bytes = struct.pack("<i", len(encoded)) + encoded
-            old_str_bytes = data[old_str_start:old_str_end]
-            delta         = len(new_str_bytes) - len(old_str_bytes)
+            delta         = len(new_str_bytes) - (old_str_end - old_str_start)
 
-            # Splice new string into the file
             new_data = bytearray(data[:old_str_start] + new_str_bytes + data[old_str_end:])
-
-            # Fix the StrProperty's value_size in the 8-byte sub-header
             struct.pack_into("<I", new_data, value_size_pos, len(new_str_bytes))
-
-            # Fix the top-level header_size (bytes 0-3)
             old_header_size = struct.unpack_from("<I", new_data, 0)[0]
             new_header_size = old_header_size + delta
             struct.pack_into("<I", new_data, 0, new_header_size)
-
-            # Recalculate and write the CRC (bytes 4-7)
             new_crc = _crc32_rl(bytes(new_data[8 : 8 + new_header_size]))
             struct.pack_into("<I", new_data, 4, new_crc)
 
-            logger.info("ReplayName written to replay binary (%+d bytes): %r", delta, name)
+            logger.info("ReplayName updated in replay binary (%+d bytes): %r", delta, name)
             return bytes(new_data)
 
         pos = val_end  # skip to next property
 
-    logger.warning("ReplayName property not found in replay header — file unchanged")
-    return data
+    # ── INSERT new property before "None" terminator ──────────────────────────
+    # Fresh replays that were never named in-game simply omit ReplayName.
+    if none_pos < 0:
+        logger.warning("ReplayName not found and 'None' terminator missing — file unchanged")
+        return data
+
+    encoded     = name.encode("utf-8") + b"\x00"
+    value_size  = len(encoded) + 4                  # 4-byte length prefix + string bytes
+    new_prop    = (
+        _prop_str("ReplayName")                     # key
+        + _prop_str("StrProperty")                  # type
+        + struct.pack("<II", value_size, 0)          # value_size + index (always 0)
+        + struct.pack("<i", len(encoded)) + encoded  # the string value
+    )
+
+    new_data = bytearray(data[:none_pos] + new_prop + data[none_pos:])
+
+    old_header_size = struct.unpack_from("<I", new_data, 0)[0]
+    new_header_size = old_header_size + len(new_prop)
+    struct.pack_into("<I", new_data, 0, new_header_size)
+    new_crc = _crc32_rl(bytes(new_data[8 : 8 + new_header_size]))
+    struct.pack_into("<I", new_data, 4, new_crc)
+
+    logger.info("ReplayName inserted into replay binary (+%d bytes): %r", len(new_prop), name)
+    return bytes(new_data)
 
 
 # ── parser internals ──────────────────────────────────────────────────────────
