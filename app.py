@@ -264,11 +264,15 @@ class Application:
                     props["PlayerName"] = self._psynet_player_name(entry)
 
                 title = build_title(props, fallback_name=self.config.epic_display_name or "")
-                logger.info("Uploading %s to ballchasing (visibility=%s, title=%r)",
-                            filename, self.config.ballchasing_visibility, title)
+
+                # Use the title as the filename — ballchasing sets the replay's
+                # display name from the uploaded filename, no API PATCH needed.
+                upload_name = f"{title}.replay" if title else filename
+                logger.info("Uploading %s as %r (visibility=%s)",
+                            filename, upload_name, self.config.ballchasing_visibility)
                 self.root.after(0, self._win.set_statusbar,
-                                f"Uploading {i}/{len(entries)}: {filename} to ballchasing…")
-                result = client.upload_bytes(filename, data, title=title)
+                                f"Uploading {i}/{len(entries)}: {upload_name} to ballchasing…")
+                result = client.upload_bytes(upload_name, data)
 
                 if result.ok and not result.duplicate:
                     logger.info("Upload successful — %s — %s", filename, result.url)

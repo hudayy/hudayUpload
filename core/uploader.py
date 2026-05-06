@@ -66,8 +66,13 @@ class BallchasingClient:
 
     # ── upload ────────────────────────────────────────────────────────────────
 
-    def upload_bytes(self, filename: str, data: bytes, title: str = "") -> UploadResult:
-        """Upload replay from in-memory bytes (downloaded from Epic API)."""
+    def upload_bytes(self, filename: str, data: bytes) -> UploadResult:
+        """Upload replay from in-memory bytes (downloaded from Epic API).
+
+        Pass the desired display name as *filename* (e.g. '2026-04-28.00.09 huday
+        Ranked Doubles Win.replay') — ballchasing uses the uploaded filename as
+        the replay title automatically, no separate PATCH required.
+        """
         try:
             r = self._session.post(
                 _BC_UPLOAD_URL,
@@ -80,14 +85,6 @@ class BallchasingClient:
                 replay_id = body.get("id", "")
                 url = f"https://ballchasing.com/replay/{replay_id}"
                 logger.info("Uploaded %s → %s", filename, url)
-                if title and replay_id:
-                    import threading
-                    threading.Thread(
-                        target=self._patch_title,
-                        args=(replay_id, title),
-                        daemon=True,
-                        name=f"patch-title-{replay_id[:8]}",
-                    ).start()
                 return UploadResult(ok=True, replay_id=replay_id, url=url, filename=filename)
             if r.status_code == 409:
                 logger.info("Duplicate replay %s — already on ballchasing", filename)
@@ -98,37 +95,6 @@ class BallchasingClient:
         except requests.RequestException as exc:
             logger.error("Upload error for %s: %s", filename, exc)
             return UploadResult(ok=False, error=str(exc), filename=filename)
-
-    def _patch_title(self, replay_id: str, title: str) -> None:
-        """PATCH the replay title on ballchasing (runs in a background thread).
-
-        Ballchasing processes replays asynchronously — the record may not exist
-        immediately after the 201 upload response.  Retry with increasing delays.
-        """
-        url = f"https://ballchasing.com/api/v2/replays/{replay_id}"
-        # Waits: 5s, 15s, 30s, 60s, 60s  (up to ~3 minutes total)
-        for attempt, wait in enumerate([5, 15, 30, 60, 60], start=1):
-            time.sleep(wait)
-            try:
-                r = self._session.patch(
-                    url,
-                    json={"title": title},
-                    headers={"Content-Type": "application/json"},
-                    timeout=15,
-                )
-                if r.status_code == 204:
-                    logger.info("Title set (attempt %d): %r → %s", attempt, title, replay_id)
-                    return
-                logger.warning(
-                    "Title PATCH HTTP %d on attempt %d for %s — body: %s",
-                    r.status_code, attempt, replay_id, r.text[:300],
-                )
-                if r.status_code == 404:
-                    continue  # replay still processing — try again
-                return  # any other error is unlikely to fix itself
-            except Exception as exc:
-                logger.warning("Title PATCH error on attempt %d for %s: %s", attempt, replay_id, exc)
-        logger.warning("Title PATCH gave up after 5 attempts for %s", replay_id)
 
     def upload(self, replay_path: Path) -> UploadResult:
         filename = replay_path.name
