@@ -267,12 +267,31 @@ class Application:
 
                 props = parse_header(data)
 
-                # Inject fields not present in the replay header:
-                # Playlist comes from PsyNet; PlayerName from PsyNet Players list.
+                # Inject fields not present in the replay header.
+                # Primary source: PsyNet _raw_entry Match object.
+                raw_match = entry.get("_raw_entry", {}).get("Match", {})
                 if not props.get("Playlist"):
                     props["Playlist"] = entry.get("playlist_id", 0)
                 if not props.get("PlayerName"):
                     props["PlayerName"] = self._psynet_player_name(entry)
+                if not isinstance(props.get("WinningTeam"), int):
+                    wt = raw_match.get("WinningTeam")
+                    if isinstance(wt, int):
+                        props["WinningTeam"] = wt
+                if not isinstance(props.get("Team0Score"), int):
+                    s = raw_match.get("Team0Score")
+                    if isinstance(s, int):
+                        props["Team0Score"] = s
+                if not isinstance(props.get("Team1Score"), int):
+                    s = raw_match.get("Team1Score")
+                    if isinstance(s, int):
+                        props["Team1Score"] = s
+                if not isinstance(props.get("PrimaryPlayerTeam"), int):
+                    my_name = (self.config.epic_display_name or "").rstrip(".").strip().lower()
+                    for p in raw_match.get("Players", []):
+                        if (p.get("PlayerName") or "").strip().lower() == my_name:
+                            props["PrimaryPlayerTeam"] = p.get("LastTeam", -1)
+                            break
 
                 # Supplement with Stats API UpdateState data if available
                 state = self._match_states.get(guid)

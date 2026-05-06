@@ -170,7 +170,10 @@ def _inject_replay_name(data: bytes, name: str) -> bytes:
 
         if key == "ReplayName" and type_name == "StrProperty":
             old_str_start = pos
-            _, old_str_end = _read_str(data, pos)
+            # Use val_end (from the property's value_size sub-header field) as
+            # the authoritative end of the old string bytes — this avoids any
+            # _read_str parse error on unusual or empty string encodings.
+            old_str_end = val_end
 
             # Build the replacement: 4-byte length prefix + UTF-8 content + null terminator
             encoded      = name.encode("utf-8") + b"\x00"
