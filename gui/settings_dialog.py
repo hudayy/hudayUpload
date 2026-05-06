@@ -66,6 +66,11 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(bottom, text="Save",   command=self._save,    width=10).pack(side=tk.RIGHT, padx=(4, 0))
         ttk.Button(bottom, text="Cancel", command=self.destroy,  width=10).pack(side=tk.RIGHT)
         ttk.Button(bottom, text="Export Logs", command=self._export_logs, width=14).pack(side=tk.LEFT)
+        ttk.Button(
+            bottom, text="Privacy Policy",
+            command=lambda: webbrowser.open("https://huday.net/privacy-policy.html"),
+            width=14,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
     # ── tab: Behaviour ────────────────────────────────────────────────────────
 

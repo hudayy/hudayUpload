@@ -24,7 +24,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 
 _GITHUB_API = "https://api.github.com/repos/hudayy/hudayUpload/releases/latest"
 _EXE_ASSET_NAME = "hudayUpload.exe"
@@ -137,20 +137,32 @@ def download_and_install(
         )
 
     # Write a batch script that:
-    #   1. Waits for this process to exit (ping delay)
-    #   2. Moves the downloaded exe over the current one
-    #   3. Launches the updated exe from its own directory
-    #   4. Deletes itself
+    #   1. Waits for this process to exit (timeout)
+    #   2. Moves the downloaded exe over the current one (retries if locked)
+    #   3. Waits for AV scan / FS to settle so the new exe is loadable
+    #   4. Launches the updated exe from its own directory using PowerShell's
+    #      Start-Process (more reliable env inheritance than cmd's `start`)
+    #   5. Deletes itself
     exe_dir = str(current_exe.parent)
     bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="hudayUpload_update_")
     try:
         bat = (
             "@echo off\n"
-            "ping 127.0.0.1 -n 4 > nul\n"
-            f'move /y "{new_exe}" "{current_exe}"\n'
-            # /d sets the working directory so the exe finds its siblings correctly
-            f'start /d "{exe_dir}" "" "{current_exe}"\n'
-            'del "%~f0"\n'
+            "timeout /t 3 /nobreak > nul\n"
+            ":retry_move\n"
+            f'move /y "{new_exe}" "{current_exe}" > nul 2>&1\n'
+            "if errorlevel 1 (\n"
+            "    timeout /t 1 /nobreak > nul\n"
+            "    goto retry_move\n"
+            ")\n"
+            # Let the freshly-written exe settle (AV scans, FS flush) before
+            # launch — without this the PyInstaller bootloader can fail to
+            # load python<ver>.dll from its temp extraction directory.
+            "timeout /t 3 /nobreak > nul\n"
+            # PowerShell's Start-Process inherits the parent env cleanly and
+            # always spawns the process detached from the batch.
+            f'powershell -NoProfile -Command "Start-Process -FilePath \'{current_exe}\' -WorkingDirectory \'{exe_dir}\'"\n'
+            '(goto) 2>nul & del "%~f0"\n'
         )
         os.write(bat_fd, bat.encode("ascii"))
     finally:
