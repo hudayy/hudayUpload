@@ -125,14 +125,19 @@ class EpicClient:
             guid  = match.get("MatchGUID", "")
             url   = entry.get("ReplayUrl", "")
             if guid and url and guid not in uploaded_guids:
+                # Log the raw entry structure so field names can be verified in exported logs
+                logger.info("Raw PsyNet match entry for %s: %s", guid, entry)
                 found.append({
                     "match_guid":     guid,
                     "replay_url":     url,
-                    # Extra fields for building a human-readable title
+                    # Extra fields for building a human-readable title.
+                    # Field names verified against raw entry dump in logs.
                     "match_time":     match.get("Created", ""),
                     "playlist_id":    match.get("PlaylistID", 0),
                     "player_team_id": entry.get("PlayerTeamID", -1),
                     "teams":          match.get("Teams", []),
+                    # Keep the full raw entry so app.py can fish out any field
+                    "_raw_entry":     entry,
                 })
                 if len(found) >= max_count:
                     break
