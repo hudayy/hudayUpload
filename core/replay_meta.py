@@ -63,39 +63,48 @@ def build_title(props: dict[str, Any], fallback_name: str = "") -> str:
     parts: list[str] = []
 
     # ── date / time ──────────────────────────────────────────────────────────
-    # Stored in the replay as "YYYY-MM-DD:H-M-S" (fields are NOT zero-padded)
+    # Stored in the replay as "YYYY-MM-DD HH-MM-SS" (space-separated, zero-padded)
     date_str = props.get("Date", "")
     if date_str and isinstance(date_str, str):
         try:
-            date_part, _, time_part = date_str.partition(":")
+            date_part, _, time_part = date_str.partition(" ")
             h, m = (time_part.split("-") + ["0", "0"])[:2]
             parts.append(f"{date_part}.{int(h):02d}.{int(m):02d}")
         except Exception:
             pass
 
     # ── player name ──────────────────────────────────────────────────────────
+    # Key is "PlayerName" if injected externally; replay file itself stores it
+    # inside the PlayerStats ArrayProperty (not parsed here).
     name = (props.get("PlayerName") or fallback_name or "").strip()
     if name:
         parts.append(name)
 
     # ── game mode ────────────────────────────────────────────────────────────
+    # "Playlist" is not in the replay header; caller should inject it from PsyNet.
     playlist_id = int(props.get("Playlist") or 0)
     mode = PLAYLIST_NAMES.get(playlist_id, "")
     if mode:
         parts.append(mode)
 
     # ── win / loss / draw ────────────────────────────────────────────────────
-    player_team = props.get("PlayerTeam")
-    t0 = int(props.get("Team0Score") or 0)
-    t1 = int(props.get("Team1Score") or 0)
-    if isinstance(player_team, int) and player_team in (0, 1):
-        my_score  = t0 if player_team == 0 else t1
-        opp_score = t1 if player_team == 0 else t0
-        parts.append(
-            "Win"  if my_score > opp_score else
-            "Loss" if my_score < opp_score else
-            "Draw"
-        )
+    # Use WinningTeam (authoritative) together with PrimaryPlayerTeam.
+    player_team  = props.get("PrimaryPlayerTeam")
+    winning_team = props.get("WinningTeam")
+    if isinstance(player_team, int) and isinstance(winning_team, int):
+        parts.append("Win" if player_team == winning_team else "Loss")
+    else:
+        # Fallback: compare scores
+        t0 = int(props.get("Team0Score") or 0)
+        t1 = int(props.get("Team1Score") or 0)
+        if isinstance(player_team, int) and player_team in (0, 1):
+            my_score  = t0 if player_team == 0 else t1
+            opp_score = t1 if player_team == 0 else t0
+            parts.append(
+                "Win"  if my_score > opp_score else
+                "Loss" if my_score < opp_score else
+                "Draw"
+            )
 
     title = " ".join(parts)
     logger.debug("Built replay title: %r  (props: Date=%r Playlist=%r PlayerTeam=%r scores=%d-%d)",

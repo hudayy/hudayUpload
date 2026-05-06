@@ -255,6 +255,14 @@ class Application:
                     return
 
                 props = parse_header(data)
+
+                # Inject fields not present in the replay header:
+                # Playlist comes from PsyNet; PlayerName from PsyNet Players list.
+                if not props.get("Playlist"):
+                    props["Playlist"] = entry.get("playlist_id", 0)
+                if not props.get("PlayerName"):
+                    props["PlayerName"] = self._psynet_player_name(entry)
+
                 title = build_title(props, fallback_name=self.config.epic_display_name or "")
                 logger.info("Uploading %s to ballchasing (visibility=%s, title=%r)",
                             filename, self.config.ballchasing_visibility, title)
@@ -272,6 +280,25 @@ class Application:
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
+
+    def _psynet_player_name(self, entry: dict) -> str:
+        """Return the in-game player name from the PsyNet match entry.
+
+        Searches the Players list for a name that matches the stored Epic
+        display name (ignoring trailing punctuation), then falls back to the
+        first player in the list, then to the config display name.
+        """
+        players = entry.get("_raw_entry", {}).get("Match", {}).get("Players", [])
+        if not players:
+            return (self.config.epic_display_name or "").rstrip(".").strip()
+        display = (self.config.epic_display_name or "").rstrip(".").strip().lower()
+        # Prefer exact or prefix match
+        for p in players:
+            pname = (p.get("PlayerName") or "").strip()
+            if pname.lower() == display:
+                return pname
+        # Fall back to first player (recording player is usually first)
+        return (players[0].get("PlayerName") or "").strip() or display
 
     def _on_upload_done(self, result: UploadResult) -> None:
         if result.ok and not result.duplicate:

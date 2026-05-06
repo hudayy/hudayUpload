@@ -81,7 +81,13 @@ class BallchasingClient:
                 url = f"https://ballchasing.com/replay/{replay_id}"
                 logger.info("Uploaded %s → %s", filename, url)
                 if title and replay_id:
-                    self._patch_title(replay_id, title)
+                    import threading
+                    threading.Thread(
+                        target=self._patch_title,
+                        args=(replay_id, title),
+                        daemon=True,
+                        name=f"patch-title-{replay_id[:8]}",
+                    ).start()
                 return UploadResult(ok=True, replay_id=replay_id, url=url, filename=filename)
             if r.status_code == 409:
                 logger.info("Duplicate replay %s — already on ballchasing", filename)
@@ -94,28 +100,35 @@ class BallchasingClient:
             return UploadResult(ok=False, error=str(exc), filename=filename)
 
     def _patch_title(self, replay_id: str, title: str) -> None:
-        """PATCH the replay title on ballchasing.
+        """PATCH the replay title on ballchasing (runs in a background thread).
 
-        Ballchasing processes replays asynchronously — the replay record may not
-        exist in the API yet immediately after the 201 upload response.  Retry a
-        few times with increasing delays before giving up.
+        Ballchasing processes replays asynchronously — the record may not exist
+        immediately after the 201 upload response.  Retry with increasing delays.
         """
         url = f"https://ballchasing.com/api/v2/replays/{replay_id}"
-        for attempt, wait in enumerate([3, 6, 10], start=1):
+        # Waits: 5s, 15s, 30s, 60s, 60s  (up to ~3 minutes total)
+        for attempt, wait in enumerate([5, 15, 30, 60, 60], start=1):
             time.sleep(wait)
             try:
-                r = self._session.patch(url, json={"title": title}, timeout=15)
+                r = self._session.patch(
+                    url,
+                    json={"title": title},
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                )
                 if r.status_code == 204:
                     logger.info("Title set (attempt %d): %r → %s", attempt, title, replay_id)
                     return
+                logger.warning(
+                    "Title PATCH HTTP %d on attempt %d for %s — body: %s",
+                    r.status_code, attempt, replay_id, r.text[:300],
+                )
                 if r.status_code == 404:
-                    logger.debug("Title PATCH 404 on attempt %d — replay not indexed yet", attempt)
-                    continue
-                logger.warning("Title PATCH HTTP %d on attempt %d for %s", r.status_code, attempt, replay_id)
-                return
+                    continue  # replay still processing — try again
+                return  # any other error is unlikely to fix itself
             except Exception as exc:
                 logger.warning("Title PATCH error on attempt %d for %s: %s", attempt, replay_id, exc)
-        logger.warning("Title PATCH gave up after 3 attempts for %s", replay_id)
+        logger.warning("Title PATCH gave up after 5 attempts for %s", replay_id)
 
     def upload(self, replay_path: Path) -> UploadResult:
         filename = replay_path.name
