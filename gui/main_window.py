@@ -412,8 +412,10 @@ def _apply_theme(root: tk.Tk) -> None:
     style.configure("Treeview",         font=("Segoe UI", 9), rowheight=22)
     style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
 
-    # Apply Windows dark title bar (requires Windows 10 build 18985+ / Windows 11)
-    _set_dark_titlebar(root)
+    # Apply Windows dark title bar after the window is realised on screen
+    # (DwmSetWindowAttribute needs the HWND to be visible; scheduling via after()
+    # ensures the window has been shown before we call it)
+    root.after(10, lambda: _set_dark_titlebar(root))
 
 
 def _set_dark_titlebar(window: tk.Tk | tk.Toplevel) -> None:
