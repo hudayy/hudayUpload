@@ -24,7 +24,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 
 _GITHUB_API = "https://api.github.com/repos/hudayy/hudayUpload/releases/latest"
 _EXE_ASSET_NAME = "hudayUpload.exe"
@@ -139,15 +139,17 @@ def download_and_install(
     # Write a batch script that:
     #   1. Waits for this process to exit (ping delay)
     #   2. Moves the downloaded exe over the current one
-    #   3. Launches the updated exe
+    #   3. Launches the updated exe from its own directory
     #   4. Deletes itself
+    exe_dir = str(current_exe.parent)
     bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="hudayUpload_update_")
     try:
         bat = (
             "@echo off\n"
             "ping 127.0.0.1 -n 4 > nul\n"
             f'move /y "{new_exe}" "{current_exe}"\n'
-            f'start "" "{current_exe}"\n'
+            # /d sets the working directory so the exe finds its siblings correctly
+            f'start /d "{exe_dir}" "" "{current_exe}"\n'
             'del "%~f0"\n'
         )
         os.write(bat_fd, bat.encode("ascii"))
@@ -156,9 +158,10 @@ def download_and_install(
 
     _progress("Restarting…")
 
-    # Launch the batch script detached so it survives this process exiting
+    # CREATE_NO_WINDOW keeps full env inheritance (DETACHED_PROCESS strips PATH,
+    # which breaks PyInstaller's DLL loading on relaunch).
     subprocess.Popen(
         ["cmd.exe", "/c", bat_path],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
