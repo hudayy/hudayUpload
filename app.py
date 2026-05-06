@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 
 _POST_GAME_DELAY_DEFAULT = 30.0  # fallback if config not loaded yet
 
+# PlaylistID → human-readable mode name
+_PLAYLIST_NAMES: dict[int, str] = {
+    1:  "Casual Duel",
+    2:  "Casual Doubles",
+    3:  "Casual Standard",
+    4:  "Casual Chaos",
+    10: "Ranked Duel",
+    11: "Ranked Doubles",
+    13: "Ranked Standard",
+    22: "Tournament",
+    27: "Ranked Hoops",
+    28: "Ranked Rumble",
+    29: "Ranked Dropshot",
+    30: "Ranked Snowday",
+}
+
 
 class Application:
     def __init__(self, root) -> None:
@@ -252,11 +268,12 @@ class Application:
                                     f"Network error downloading replay: {exc}")
                     return
 
-                logger.info("Uploading %s to ballchasing (visibility=%s)",
-                            filename, self.config.ballchasing_visibility)
+                title = self._build_replay_title(entry)
+                logger.info("Uploading %s to ballchasing (visibility=%s, title=%r)",
+                            filename, self.config.ballchasing_visibility, title)
                 self.root.after(0, self._win.set_statusbar,
                                 f"Uploading {i}/{len(entries)}: {filename} to ballchasing…")
-                result = client.upload_bytes(filename, data)
+                result = client.upload_bytes(filename, data, title=title)
 
                 if result.ok and not result.duplicate:
                     logger.info("Upload successful — %s — %s", filename, result.url)
@@ -268,6 +285,44 @@ class Application:
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
+
+    def _build_replay_title(self, entry: dict) -> str:
+        """Build a human-readable replay title like '2026-04-28.00.09 huday Ranked Doubles Win'."""
+        parts: list[str] = []
+
+        # Date / time (match_time is an ISO-8601 string from PsyNet, e.g. '2026-04-28T00:09:00.000Z')
+        raw_time = entry.get("match_time", "")
+        if raw_time:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                dt_local = dt.astimezone()
+                parts.append(dt_local.strftime("%Y-%m-%d.%H.%M"))
+            except Exception:
+                pass
+
+        # Player display name
+        name = (self.config.epic_display_name or "").strip()
+        if name:
+            parts.append(name)
+
+        # Playlist / game mode
+        mode = _PLAYLIST_NAMES.get(int(entry.get("playlist_id", 0) or 0), "")
+        if mode:
+            parts.append(mode)
+
+        # Win / Loss / Draw
+        team_id = entry.get("player_team_id", -1)
+        teams   = entry.get("teams", [])
+        if isinstance(team_id, int) and team_id >= 0 and len(teams) >= 2:
+            try:
+                my_score  = int(teams[team_id].get("Score", 0))
+                opp_score = int(teams[1 - team_id].get("Score", 0))
+                parts.append("Win" if my_score > opp_score else "Loss" if my_score < opp_score else "Draw")
+            except Exception:
+                pass
+
+        return " ".join(parts)
 
     def _on_upload_done(self, result: UploadResult) -> None:
         if result.ok and not result.duplicate:

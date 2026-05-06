@@ -121,10 +121,19 @@ class EpicClient:
 
         found = []
         for entry in matches:
-            guid = entry.get("Match", {}).get("MatchGUID", "")
-            url  = entry.get("ReplayUrl", "")
+            match = entry.get("Match", {})
+            guid  = match.get("MatchGUID", "")
+            url   = entry.get("ReplayUrl", "")
             if guid and url and guid not in uploaded_guids:
-                found.append({"match_guid": guid, "replay_url": url})
+                found.append({
+                    "match_guid":     guid,
+                    "replay_url":     url,
+                    # Extra fields for building a human-readable title
+                    "match_time":     match.get("Created", ""),
+                    "playlist_id":    match.get("PlaylistID", 0),
+                    "player_team_id": entry.get("PlayerTeamID", -1),
+                    "teams":          match.get("Teams", []),
+                })
                 if len(found) >= max_count:
                     break
 

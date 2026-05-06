@@ -66,7 +66,7 @@ class BallchasingClient:
 
     # ── upload ────────────────────────────────────────────────────────────────
 
-    def upload_bytes(self, filename: str, data: bytes) -> UploadResult:
+    def upload_bytes(self, filename: str, data: bytes, title: str = "") -> UploadResult:
         """Upload replay from in-memory bytes (downloaded from Epic API)."""
         try:
             r = self._session.post(
@@ -80,6 +80,8 @@ class BallchasingClient:
                 replay_id = body.get("id", "")
                 url = f"https://ballchasing.com/replay/{replay_id}"
                 logger.info("Uploaded %s → %s", filename, url)
+                if title and replay_id:
+                    self._patch_title(replay_id, title)
                 return UploadResult(ok=True, replay_id=replay_id, url=url, filename=filename)
             if r.status_code == 409:
                 logger.info("Duplicate replay %s — already on ballchasing", filename)
@@ -90,6 +92,21 @@ class BallchasingClient:
         except requests.RequestException as exc:
             logger.error("Upload error for %s: %s", filename, exc)
             return UploadResult(ok=False, error=str(exc), filename=filename)
+
+    def _patch_title(self, replay_id: str, title: str) -> None:
+        """PATCH the replay title on ballchasing after a successful upload."""
+        try:
+            r = self._session.patch(
+                f"https://ballchasing.com/api/v2/replays/{replay_id}",
+                json={"title": title},
+                timeout=15,
+            )
+            if r.status_code == 204:
+                logger.info("Title set: %r → %s", title, replay_id)
+            else:
+                logger.warning("Title PATCH returned HTTP %d for %s", r.status_code, replay_id)
+        except Exception as exc:
+            logger.warning("Title PATCH failed for %s: %s", replay_id, exc)
 
     def upload(self, replay_path: Path) -> UploadResult:
         filename = replay_path.name
