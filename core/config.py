@@ -22,6 +22,12 @@ _DEFAULTS = {
     "post_game_delay": 45,
     "upload_batch_size": 15,
     "upload_every_n_games": 15,
+    # Rocky upload (lexore.ca)
+    "rocky_enabled": False,
+    # BallCam.tv upload
+    "ballcam_enabled": False,
+    "ballcam_token": "",
+    "ballcam_visibility": "public",
     # Epic Games auth (populated after user logs in)
     "epic_refresh_token": "",
     "epic_account_id": "",
@@ -93,6 +99,10 @@ class Config:
     @property
     def has_bc_token(self) -> bool:
         return bool(self._data.get("ballchasing_token", "").strip())
+
+    @property
+    def has_ballcam_token(self) -> bool:
+        return bool(self._data.get("ballcam_token", "").strip())
 
     @property
     def has_epic_auth(self) -> bool:

@@ -184,7 +184,12 @@ class MainWindow:
             text="🔗 Ballchasing",
             command=lambda: webbrowser.open("https://ballchasing.com"),
             width=14,
-        ).pack(side=tk.LEFT)
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self._btn_pause = ttk.Button(
+            toolbar, text="⏸ Pause", command=self.app.toggle_pause, width=10
+        )
+        self._btn_pause.pack(side=tk.LEFT)
 
         ttk.Button(
             toolbar, text="Minimize to Tray", command=self._minimize_to_tray, width=16
@@ -287,6 +292,17 @@ class MainWindow:
             self._banner.pack(fill=tk.X, padx=12, pady=(0, 4))
         else:
             self._banner.pack_forget()
+
+    def set_paused_state(self, paused: bool) -> None:
+        """Update the pause button and Stats API dot to reflect paused/resumed state."""
+        if paused:
+            self._btn_pause.config(text="▶ Resume")
+            self._dot_rl.set_color(_CLR_WARN)
+            self._lbl_rl.set_normal("Monitoring paused — click ▶ Resume to reconnect")
+            self.set_statusbar("Monitoring paused. Stats API disconnected to reduce in-game load.")
+        else:
+            self._btn_pause.config(text="⏸ Pause")
+            # Watcher will post connected/connecting events that update the dot naturally
 
     def set_statusbar(self, text: str) -> None:
         self._statusbar.config(text=text)

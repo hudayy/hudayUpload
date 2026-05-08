@@ -71,6 +71,11 @@ class SettingsDialog(tk.Toplevel):
             command=lambda: webbrowser.open("https://huday.net/privacy-policy.html"),
             width=14,
         ).pack(side=tk.LEFT, padx=(6, 0))
+        self._update_btn = ttk.Button(
+            bottom, text="Check for Updates",
+            command=self._check_for_updates, width=18,
+        )
+        self._update_btn.pack(side=tk.LEFT, padx=(6, 0))
 
     # ── tab: Behaviour ────────────────────────────────────────────────────────
 
@@ -158,6 +163,62 @@ class SettingsDialog(tk.Toplevel):
             state="readonly", width=12,
         ).grid(row=3, column=1, sticky="w", pady=(10, 3))
 
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(12, 8)
+        )
+
+        self._rocky_var = tk.BooleanVar()
+        rocky_cb = ttk.Checkbutton(
+            parent,
+            text="Also upload to Rocky",
+            variable=self._rocky_var,
+        )
+        rocky_cb.grid(row=5, column=0, columnspan=2, sticky="w")
+
+        ttk.Button(
+            parent, text="What is Rocky? ↗",
+            command=lambda: webbrowser.open("https://github.com/LEX0RE/rockpload"),
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=7, column=0, columnspan=2, sticky="ew", pady=(12, 8)
+        )
+
+        self._ballcam_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            parent,
+            text="Also upload to BallCam.tv",
+            variable=self._ballcam_var,
+        ).grid(row=8, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(parent, text="BallCam Token").grid(row=9, column=0, sticky="w", pady=(6, 3))
+        ballcam_token_row = ttk.Frame(parent)
+        ballcam_token_row.grid(row=9, column=1, sticky="ew", pady=(6, 3))
+        self._ballcam_token_var = tk.StringVar()
+        self._ballcam_token_entry = ttk.Entry(
+            ballcam_token_row, textvariable=self._ballcam_token_var, show="•", width=32
+        )
+        self._ballcam_token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._show_ballcam_token = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            ballcam_token_row, text="Show",
+            variable=self._show_ballcam_token,
+            command=self._toggle_ballcam_token_visibility,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        ttk.Button(
+            parent, text="Get BallCam token ↗",
+            command=lambda: webbrowser.open("https://ballcam.tv"),
+        ).grid(row=10, column=1, sticky="w", pady=(0, 2))
+
+        ttk.Label(parent, text="BallCam Visibility").grid(row=11, column=0, sticky="w", pady=(4, 3))
+        self._ballcam_vis_var = tk.StringVar()
+        ttk.Combobox(
+            parent, textvariable=self._ballcam_vis_var,
+            values=["public", "unlisted"],
+            state="readonly", width=12,
+        ).grid(row=11, column=1, sticky="w", pady=(4, 3))
+
     # ── tab: Epic Games ───────────────────────────────────────────────────────
 
     def _build_epic(self, parent: ttk.Frame) -> None:
@@ -220,6 +281,10 @@ class SettingsDialog(tk.Toplevel):
         self._delay_var.set(int(self.cfg.post_game_delay))
         self._batch_var.set(int(self.cfg.upload_batch_size))
         self._every_n_var.set(int(self.cfg.upload_every_n_games))
+        self._rocky_var.set(bool(self.cfg.rocky_enabled))
+        self._ballcam_var.set(bool(self.cfg.ballcam_enabled))
+        self._ballcam_token_var.set(self.cfg.ballcam_token)
+        self._ballcam_vis_var.set(self.cfg.ballcam_visibility)
         self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
@@ -246,6 +311,10 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.post_game_delay        = self._delay_var.get()
         self.cfg.upload_batch_size      = self._batch_var.get()
         self.cfg.upload_every_n_games   = self._every_n_var.get()
+        self.cfg.rocky_enabled          = self._rocky_var.get()
+        self.cfg.ballcam_enabled        = self._ballcam_var.get()
+        self.cfg.ballcam_token          = self._ballcam_token_var.get().strip()
+        self.cfg.ballcam_visibility     = self._ballcam_vis_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 
@@ -256,6 +325,9 @@ class SettingsDialog(tk.Toplevel):
 
     def _toggle_token_visibility(self) -> None:
         self._token_entry.config(show="" if self._show_token.get() else "•")
+
+    def _toggle_ballcam_token_visibility(self) -> None:
+        self._ballcam_token_entry.config(show="" if self._show_ballcam_token.get() else "•")
 
     def _browse_rl(self) -> None:
         d = filedialog.askdirectory(
@@ -478,6 +550,31 @@ class SettingsDialog(tk.Toplevel):
 
         dlg.protocol("WM_DELETE_WINDOW", _on_close)
         dlg.after(500, _poll_clipboard)
+
+    def _check_for_updates(self) -> None:
+        self._update_btn.config(state="disabled", text="Checking…")
+
+        def _on_result(info: dict | None, current_version: str) -> None:
+            if not self.winfo_exists():
+                return
+            self._update_btn.config(state="normal", text="Check for Updates")
+            if info:
+                # The update banner is already shown by app.check_for_update_manual.
+                messagebox.showinfo(
+                    "Update Available",
+                    f"Version {info['version']} is available. "
+                    f"You're on {current_version}.\n\n"
+                    "Click 'Update' on the banner in the main window to install.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "Up to Date",
+                    f"You're running the latest version ({current_version}).",
+                    parent=self,
+                )
+
+        self.app.check_for_update_manual(_on_result)
 
     def _export_logs(self) -> None:
         from core.log_buffer import log_buffer

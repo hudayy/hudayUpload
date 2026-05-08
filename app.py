@@ -12,7 +12,7 @@ from core.epic_auth import EpicAuthError, EpicClient
 from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
 from core.updater import check_for_update, download_and_install
-from core.uploader import BallchasingClient, UploadResult
+from core.uploader import BallcamClient, BallchasingClient, RockyClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ class Application:
         self._games_since_upload: int = 0
         # Match state data from UpdateState events, keyed by MatchGuid
         self._match_states: dict[str, dict] = {}
+        # Pause flag — when True the StatsWatcher is stopped and won't reconnect
+        self._paused: bool = False
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -83,9 +85,25 @@ class Application:
     def on_settings_changed(self) -> None:
         self._watcher.stop()
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
-        self._watcher.start()
+        if not self._paused:
+            self._watcher.start()
         self._verify_bc_token_async()
         self._refresh_epic_status_ui()
+
+    def toggle_pause(self) -> None:
+        """Pause or resume the Stats API connection to reduce in-game CPU load."""
+        if self._paused:
+            self._paused = False
+            self._watcher.start()
+            logger.info("Monitoring resumed")
+            if self._win:
+                self.root.after(0, self._win.set_paused_state, False)
+        else:
+            self._paused = True
+            self._watcher.stop()
+            logger.info("Monitoring paused by user")
+            if self._win:
+                self.root.after(0, self._win.set_paused_state, True)
 
     def _refresh_epic_status_ui(self) -> None:
         cfg = self.config
@@ -336,6 +354,32 @@ class Application:
                 else:
                     logger.error("Ballchasing upload failed — %s — %s", filename, result.error)
 
+                # Optional Rocky upload
+                if getattr(self.config, "rocky_enabled", False):
+                    self.root.after(0, self._win.set_statusbar,
+                                    f"Uploading {i}/{len(entries)}: {upload_name} to Rocky…")
+                    rocky_result = RockyClient().upload_bytes(upload_name, data)
+                    if rocky_result.ok and not rocky_result.duplicate:
+                        logger.info("Rocky upload successful — %s", filename)
+                    elif rocky_result.duplicate:
+                        logger.info("Rocky: already uploaded (duplicate) — %s", filename)
+                    else:
+                        logger.error("Rocky upload failed — %s — %s", filename, rocky_result.error)
+
+                # Optional BallCam.tv upload
+                if getattr(self.config, "ballcam_enabled", False) and self.config.has_ballcam_token:
+                    self.root.after(0, self._win.set_statusbar,
+                                    f"Uploading {i}/{len(entries)}: {upload_name} to BallCam.tv…")
+                    ballcam_client = BallcamClient(
+                        self.config.ballcam_token,
+                        getattr(self.config, "ballcam_visibility", "public"),
+                    )
+                    ballcam_result = ballcam_client.upload_bytes(upload_name, data, title=title)
+                    if ballcam_result.ok:
+                        logger.info("BallCam upload successful — %s — %s", filename, ballcam_result.url)
+                    else:
+                        logger.error("BallCam upload failed — %s — %s", filename, ballcam_result.error)
+
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
@@ -421,6 +465,20 @@ class Application:
                                 info["version"], info["download_url"])
         threading.Thread(target=_check, daemon=True, name="update-check").start()
 
+    def check_for_update_manual(self, on_result) -> None:
+        """Manual update check — calls on_result(info_dict_or_None, current_version)
+        on the Tk thread. Used by the 'Check for Updates' button.
+        """
+        from core.updater import VERSION
+
+        def _check():
+            info = check_for_update()
+            if info:
+                self.root.after(0, self._win.show_update_banner,
+                                info["version"], info["download_url"])
+            self.root.after(0, on_result, info, VERSION)
+        threading.Thread(target=_check, daemon=True, name="manual-update-check").start()
+
     def apply_update(self, download_url: str) -> None:
         """Download the new exe, swap it, and restart. Called from the GUI."""
         def _progress(msg: str) -> None:
@@ -453,6 +511,10 @@ class Application:
                 pystray.MenuItem("Open", self._tray_open, default=True),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Upload Now", lambda: self.trigger_manual_upload()),
+                pystray.MenuItem(
+                    lambda item: "Resume Monitoring" if self._paused else "Pause Monitoring",
+                    lambda: self.root.after(0, self.toggle_pause),
+                ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Exit", lambda: self.root.after(0, self.quit)),
             )

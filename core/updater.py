@@ -24,7 +24,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.6.4"
+VERSION = "1.6.8"
 
 _GITHUB_API = "https://api.github.com/repos/hudayy/hudayUpload/releases/latest"
 _EXE_ASSET_NAME = "hudayUpload.exe"
@@ -136,18 +136,50 @@ def download_and_install(
             "supported for the packaged .exe. Download the new release manually."
         )
 
-    # Write a batch script that:
-    #   1. Waits for this process to exit (timeout)
-    #   2. Moves the downloaded exe over the current one (retries if locked)
-    #   3. Waits for AV scan / FS to settle so the new exe is loadable
-    #   4. Launches the updated exe from its own directory using PowerShell's
-    #      Start-Process (more reliable env inheritance than cmd's `start`)
-    #   5. Deletes itself
+    # Write a VBScript launcher and a batch script.
+    #
+    # Why split it this way: when the batch tries to run the new exe directly
+    # (via `start`, PowerShell, or cmd), the PyInstaller bootloader fails with
+    # "Failed to load Python DLL" because Windows Defender's real-time scanner
+    # is still inspecting the freshly-written exe and the _MEI{xxx}\python*.dll
+    # it just extracted. A long timeout helps but isn't always enough. By
+    # delegating the launch to wscript.exe via a .vbs file, the new process
+    # starts in a completely fresh process tree (parent = explorer/wscript)
+    # with its own scan window — far more reliable than chaining from cmd.
+    #
+    # Flow:
+    #   batch:   wait → move (retry if locked) → wait (AV settle) → run vbs → self-delete
+    #   vbs:     short pause → ShellExecute the new exe → self-delete
     exe_dir = str(current_exe.parent)
+
+    vbs_fd, vbs_path = tempfile.mkstemp(suffix=".vbs", prefix="hudayUpload_launch_")
+    try:
+        # ShellExecute (vbActivate=1) launches with a clean detached context.
+        # WScript.Sleep gives Defender extra time even if the batch's wait was
+        # too short. The script then deletes itself.
+        # Single-quoted Python strings → escape backslashes for VBS strings.
+        exe_str = str(current_exe).replace('"', '""')
+        dir_str = exe_dir.replace('"', '""')
+        vbs = (
+            'Set sh = CreateObject("WScript.Shell")\r\n'
+            'Set fso = CreateObject("Scripting.FileSystemObject")\r\n'
+            'WScript.Sleep 5000\r\n'
+            f'sh.CurrentDirectory = "{dir_str}"\r\n'
+            f'sh.Run """{exe_str}""", 1, False\r\n'
+            'WScript.Sleep 1000\r\n'
+            'fso.DeleteFile WScript.ScriptFullName, True\r\n'
+        )
+        # VBS works fine as ASCII for our paths; if the user has non-ASCII
+        # paths we'd need utf-16-le with BOM, but that's vanishingly rare.
+        os.write(vbs_fd, vbs.encode("utf-8"))
+    finally:
+        os.close(vbs_fd)
+
     bat_fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="hudayUpload_update_")
     try:
         bat = (
             "@echo off\n"
+            # Wait for the parent (this) process to fully exit
             "timeout /t 3 /nobreak > nul\n"
             ":retry_move\n"
             f'move /y "{new_exe}" "{current_exe}" > nul 2>&1\n'
@@ -155,13 +187,13 @@ def download_and_install(
             "    timeout /t 1 /nobreak > nul\n"
             "    goto retry_move\n"
             ")\n"
-            # Let the freshly-written exe settle (AV scans, FS flush) before
-            # launch — without this the PyInstaller bootloader can fail to
-            # load python<ver>.dll from its temp extraction directory.
-            "timeout /t 3 /nobreak > nul\n"
-            # PowerShell's Start-Process inherits the parent env cleanly and
-            # always spawns the process detached from the batch.
-            f'powershell -NoProfile -Command "Start-Process -FilePath \'{current_exe}\' -WorkingDirectory \'{exe_dir}\'"\n'
+            # Give Defender real-time protection time to scan the new exe.
+            # Combined with the 5-second sleep inside the .vbs, this gives a
+            # generous ~13 seconds total before the new process is launched.
+            "timeout /t 8 /nobreak > nul\n"
+            # Hand off to wscript so the new exe gets a clean process tree.
+            # /B keeps the batch quiet; wscript itself detaches.
+            f'start "" /B wscript.exe "{vbs_path}"\n'
             '(goto) 2>nul & del "%~f0"\n'
         )
         os.write(bat_fd, bat.encode("ascii"))

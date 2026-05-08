@@ -28,6 +28,7 @@ PLAYLIST_NAMES: dict[int, str] = {
     2:  "Casual Doubles",
     3:  "Casual Standard",
     4:  "Casual Chaos",
+    6:  "Private",
     10: "Ranked Duel",
     11: "Ranked Doubles",
     13: "Ranked Standard",
@@ -36,6 +37,7 @@ PLAYLIST_NAMES: dict[int, str] = {
     28: "Ranked Rumble",
     29: "Ranked Dropshot",
     30: "Ranked Snowday",
+    34: "Heatseeker",
 }
 
 
