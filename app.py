@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -17,6 +18,18 @@ from core.uploader import BallcamClient, BallchasingClient, RockyClient, UploadR
 logger = logging.getLogger(__name__)
 
 _POST_GAME_DELAY_DEFAULT = 30.0  # fallback if config not loaded yet
+
+
+def _is_rl_running() -> bool:
+    """Return True if RocketLeague.exe is in the process list."""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq RocketLeague.exe", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "RocketLeague.exe" in out.stdout
+    except Exception:
+        return False
 
 
 
@@ -40,6 +53,10 @@ class Application:
         self._match_states: dict[str, dict] = {}
         # Pause flag — when True the StatsWatcher is stopped and won't reconnect
         self._paused: bool = False
+        self._rl_close_watcher_running: bool = False
+        # Active Epic account tracking (set via Stats API player detection)
+        self._current_rl_player: str = ""
+        self._active_epic_account_id: str = ""
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -104,15 +121,81 @@ class Application:
             logger.info("Monitoring paused by user")
             if self._win:
                 self.root.after(0, self._win.set_paused_state, True)
+            # Watch for RL closing while paused so we can still auto-upload
+            self._ensure_rl_close_watcher()
+
+    def _ensure_rl_close_watcher(self) -> None:
+        """Start a background thread that detects RL exit while monitoring is paused."""
+        if self._rl_close_watcher_running:
+            return
+        self._rl_close_watcher_running = True
+        threading.Thread(
+            target=self._rl_close_watch_loop,
+            daemon=True, name="rl-close-watch",
+        ).start()
+
+    def _rl_close_watch_loop(self) -> None:
+        """Poll for RocketLeague.exe; when it exits trigger upload if games are pending."""
+        try:
+            was_running = _is_rl_running()
+            while self._paused:
+                now_running = _is_rl_running()
+                if was_running and not now_running:
+                    # RL just closed while we were paused
+                    if self.config.auto_upload:
+                        count = self._games_since_upload
+                        self._games_since_upload = 0
+                        delay = float(getattr(self.config, "post_game_delay",
+                                              _POST_GAME_DELAY_DEFAULT))
+                        msg = (
+                            f"Rocket League closed — uploading {count} game(s)…"
+                            if count > 0
+                            else "Rocket League closed — checking for new replays…"
+                        )
+                        logger.info("RL closed while paused — triggering upload (pending=%d)", count)
+                        self.root.after(0, self._win.set_statusbar, msg)
+                        threading.Thread(
+                            target=self._run_epic_upload,
+                            args=(delay,), daemon=True, name="auto-upload-paused",
+                        ).start()
+                    break
+                was_running = now_running
+                time.sleep(5)
+        finally:
+            self._rl_close_watcher_running = False
 
     def _refresh_epic_status_ui(self) -> None:
-        cfg = self.config
-        if cfg.has_epic_auth:
-            name = cfg.epic_display_name.strip()
-            self.root.after(0, self._win.set_epic_status, True,
-                            f"Connected as {name}" if name else "Connected")
+        accounts = self.config.get_epic_accounts()
+        if accounts:
+            if len(accounts) == 1:
+                name = accounts[0].get("display_name", "").strip()
+                self.root.after(0, self._win.set_epic_status, True,
+                                f"Connected as {name}" if name else "Connected")
+            else:
+                names = ", ".join(a.get("display_name", "?") for a in accounts[:3])
+                suffix = f" (+{len(accounts)-3} more)" if len(accounts) > 3 else ""
+                self.root.after(0, self._win.set_epic_status, True,
+                                f"{len(accounts)} accounts: {names}{suffix}")
         else:
-            self.root.after(0, self._win.set_epic_status, False, "Not connected — open ⚙ Settings")
+            self.root.after(0, self._win.set_epic_status, False,
+                            "Not connected — open ⚙ Settings")
+
+    def _get_active_epic_account(self) -> "dict | None":
+        """Return the Epic account to use for upload.
+
+        Priority:
+        1. Account detected via Stats API (primary player name matched to account)
+        2. First configured account as fallback
+        3. None if no accounts are configured
+        """
+        accounts = self.config.get_epic_accounts()
+        if not accounts:
+            return None
+        if self._active_epic_account_id:
+            for acc in accounts:
+                if acc.get("account_id") == self._active_epic_account_id:
+                    return acc
+        return accounts[0]
 
     # ── event pump ───────────────────────────────────────────────────────────
 
@@ -131,7 +214,10 @@ class Application:
             self._win.set_rl_status(True, "Connected — watching for games")
             self._win.set_statusbar("Connected to Rocket League Stats API. Watching for games…")
         elif t == "disconnected":
+            self._current_rl_player = ""
             self._win.set_rl_status(None, "Waiting for Rocket League…")
+            # Revert Epic status back to account summary (stop showing "Playing as …")
+            self._refresh_epic_status_ui()
             if self.config.auto_upload and self._games_since_upload > 0:
                 logger.info("Rocket League closed — triggering upload for %d pending game(s)",
                             self._games_since_upload)
@@ -158,6 +244,34 @@ class Application:
                     "teams":   msg.get("teams", []),
                 }
                 logger.debug("Stored match_state for %s", guid)
+
+            # Detect which Epic account is active based on the primary player name
+            primary_name = ""
+            for p in msg.get("players", []):
+                if p.get("primary"):
+                    primary_name = p.get("name", "")
+                    break
+
+            if primary_name and primary_name != self._current_rl_player:
+                self._current_rl_player = primary_name
+                accounts = self.config.get_epic_accounts()
+                matched = None
+                for acc in accounts:
+                    acc_name = (acc.get("display_name") or "").rstrip(".").strip().lower()
+                    if primary_name.strip().lower() == acc_name:
+                        matched = acc
+                        break
+
+                if matched:
+                    self._active_epic_account_id = matched["account_id"]
+                    disp = matched.get("display_name", primary_name)
+                    logger.info("Detected active RL account: %s", disp)
+                    self._win.set_epic_status(True, f"Playing as {disp}")
+                elif accounts:
+                    # Playing on an account not in the linked list
+                    self._active_epic_account_id = ""
+                    logger.info("Unrecognised RL player: %s", primary_name)
+                    self._win.set_unknown_player(primary_name)
         elif t == "game_ended":
             now = time.monotonic()
             if now - self._last_game_end < 60:
@@ -197,7 +311,9 @@ class Application:
                 self.root.after(0, self._win.set_statusbar,
                                 "No Ballchasing token — open ⚙ Settings.")
                 return
-            if not self.config.has_epic_auth:
+
+            account = self._get_active_epic_account()
+            if account is None:
                 logger.warning("Upload skipped — no Epic auth token")
                 self.root.after(0, self._win.set_statusbar,
                                 "Not logged in to Epic — open ⚙ Settings to connect.")
@@ -205,12 +321,13 @@ class Application:
 
             self.root.after(0, self._win.set_statusbar, "Fetching match from Epic API…")
 
-            # Refresh EGS access token
-            logger.info("Refreshing Epic Games access token for %s",
-                        self.config.epic_display_name or self.config.epic_account_id)
+            # Refresh EGS access token for the active account
+            acc_label = account.get("display_name") or account.get("account_id", "")
+            logger.info("Refreshing Epic Games access token for %s", acc_label)
             try:
-                token_data = self._epic.refresh_login(self.config.epic_refresh_token)
-                logger.info("Epic token refreshed — account: %s", token_data.get("display_name") or token_data.get("account_id"))
+                token_data = self._epic.refresh_login(account["refresh_token"])
+                logger.info("Epic token refreshed — account: %s",
+                            token_data.get("display_name") or token_data.get("account_id"))
             except EpicAuthError as exc:
                 logger.error("Epic token refresh failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar,
@@ -222,13 +339,15 @@ class Application:
                                 f"Network error — will retry next game: {exc}")
                 return
 
-            # Save refreshed tokens
-            self.config.epic_refresh_token = token_data["refresh_token"]
-            self.config.epic_account_id    = token_data["account_id"]
-            self.config.epic_display_name  = token_data["display_name"]
-            self.config.save()
+            # Persist the refreshed token back to this account's slot
+            self.config.update_epic_account_token(
+                account["account_id"],
+                token_data["refresh_token"],
+                token_data.get("display_name") or account.get("display_name", ""),
+            )
+            display_name: str = token_data.get("display_name") or account.get("display_name", "")
 
-            # Fetch latest unuploaded match
+            # Fetch latest unuploaded matches for this account
             batch_size = int(getattr(self.config, "upload_batch_size", 5))
             logger.info("Fetching match history from PsyNet for account %s (batch=%d)",
                         token_data["account_id"], batch_size)
@@ -236,7 +355,7 @@ class Application:
                 entries = self._epic.get_unuploaded_matches(
                     access_token  = token_data["access_token"],
                     account_id    = token_data["account_id"],
-                    display_name  = token_data["display_name"],
+                    display_name  = display_name,
                     uploaded_guids= self._uploaded_guids,
                     max_count     = batch_size,
                 )
@@ -291,7 +410,7 @@ class Application:
                 if not props.get("Playlist"):
                     props["Playlist"] = entry.get("playlist_id", 0)
                 if not props.get("PlayerName"):
-                    props["PlayerName"] = self._psynet_player_name(entry)
+                    props["PlayerName"] = self._psynet_player_name(entry, display_name)
                 if not isinstance(props.get("WinningTeam"), int):
                     wt = raw_match.get("WinningTeam")
                     if isinstance(wt, int):
@@ -305,7 +424,7 @@ class Application:
                     if isinstance(s, int):
                         props["Team1Score"] = s
                 if not isinstance(props.get("PrimaryPlayerTeam"), int):
-                    my_name = (self.config.epic_display_name or "").rstrip(".").strip().lower()
+                    my_name = display_name.rstrip(".").strip().lower()
                     for p in raw_match.get("Players", []):
                         if (p.get("PlayerName") or "").strip().lower() == my_name:
                             props["PrimaryPlayerTeam"] = p.get("LastTeam", -1)
@@ -315,7 +434,7 @@ class Application:
                 state = self._match_states.get(guid)
                 if state:
                     if not isinstance(props.get("PrimaryPlayerTeam"), int):
-                        my_name = (self.config.epic_display_name or "").rstrip(".").strip().lower()
+                        my_name = display_name.rstrip(".").strip().lower()
                         for p in state["players"]:
                             if p.get("name", "").strip().lower() == my_name or p.get("primary"):
                                 props["PrimaryPlayerTeam"] = p["team"]
@@ -332,7 +451,7 @@ class Application:
                         elif tn == 1 and not props.get("Team1Score"):
                             props["Team1Score"] = t.get("score", 0)
 
-                title = build_title(props, fallback_name=self.config.epic_display_name or "")
+                title = build_title(props, fallback_name=display_name)
 
                 # Write the title into the replay's ReplayName binary property
                 if title:
@@ -402,24 +521,24 @@ class Application:
         except Exception as exc:
             logger.warning("Could not update DefaultStatsAPI.ini: %s", exc)
 
-    def _psynet_player_name(self, entry: dict) -> str:
+    def _psynet_player_name(self, entry: dict, display_name: str = "") -> str:
         """Return the in-game player name from the PsyNet match entry.
 
-        Searches the Players list for a name that matches the stored Epic
+        Searches the Players list for a name that matches the active Epic
         display name (ignoring trailing punctuation), then falls back to the
-        first player in the list, then to the config display name.
+        first player in the list, then to the display_name itself.
         """
         players = entry.get("_raw_entry", {}).get("Match", {}).get("Players", [])
+        clean = display_name.rstrip(".").strip()
         if not players:
-            return (self.config.epic_display_name or "").rstrip(".").strip()
-        display = (self.config.epic_display_name or "").rstrip(".").strip().lower()
-        # Prefer exact or prefix match
+            return clean
+        d_lower = clean.lower()
         for p in players:
             pname = (p.get("PlayerName") or "").strip()
-            if pname.lower() == display:
+            if pname.lower() == d_lower:
                 return pname
         # Fall back to first player (recording player is usually first)
-        return (players[0].get("PlayerName") or "").strip() or display
+        return (players[0].get("PlayerName") or "").strip() or clean
 
     def _on_upload_done(self, result: UploadResult) -> None:
         if result.ok and not result.duplicate:

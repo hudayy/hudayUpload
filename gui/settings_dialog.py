@@ -59,23 +59,28 @@ class SettingsDialog(tk.Toplevel):
         self._build_epic(tab_epic)
         self._build_rocket_league(tab_rl)
 
-        # ── bottom bar ───────────────────────────────────────────────────────
-        bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=14, pady=(6, 12))
+        # ── bottom bar — two rows so buttons aren't cramped ─────────────────
+        bottom_wrap = ttk.Frame(self)
+        bottom_wrap.pack(fill=tk.X, padx=14, pady=(6, 12))
 
-        ttk.Button(bottom, text="Save",   command=self._save,    width=10).pack(side=tk.RIGHT, padx=(4, 0))
-        ttk.Button(bottom, text="Cancel", command=self.destroy,  width=10).pack(side=tk.RIGHT)
-        ttk.Button(bottom, text="Export Logs", command=self._export_logs, width=14).pack(side=tk.LEFT)
+        # Row 1: utility actions (left-aligned)
+        util_row = ttk.Frame(bottom_wrap)
+        util_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(util_row, text="Export Logs", command=self._export_logs).pack(side=tk.LEFT)
         ttk.Button(
-            bottom, text="Privacy Policy",
+            util_row, text="Privacy Policy",
             command=lambda: webbrowser.open("https://huday.net/privacy-policy.html"),
-            width=14,
         ).pack(side=tk.LEFT, padx=(6, 0))
         self._update_btn = ttk.Button(
-            bottom, text="Check for Updates",
-            command=self._check_for_updates, width=18,
+            util_row, text="Check for Updates", command=self._check_for_updates,
         )
         self._update_btn.pack(side=tk.LEFT, padx=(6, 0))
+
+        # Row 2: confirm actions (right-aligned)
+        confirm_row = ttk.Frame(bottom_wrap)
+        confirm_row.pack(fill=tk.X)
+        ttk.Button(confirm_row, text="Save",   command=self._save,   width=10).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(confirm_row, text="Cancel", command=self.destroy, width=10).pack(side=tk.RIGHT)
 
     # ── tab: Behaviour ────────────────────────────────────────────────────────
 
@@ -222,17 +227,52 @@ class SettingsDialog(tk.Toplevel):
     # ── tab: Epic Games ───────────────────────────────────────────────────────
 
     def _build_epic(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
 
-        self._epic_status_lbl = ttk.Label(parent, text="Not connected", foreground="#9E9E9E")
-        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(parent, text="Connected Accounts:").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
 
-        ttk.Button(parent, text="Connect Epic Account", command=self._connect_epic).grid(
-            row=1, column=0, sticky="w"
+        # Account list (Treeview for theme consistency)
+        list_frame = ttk.Frame(parent)
+        list_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        list_frame.columnconfigure(0, weight=1)
+
+        self._accounts_tv = ttk.Treeview(
+            list_frame, columns=("name",), show="headings",
+            height=4, selectmode="browse",
         )
-        ttk.Button(parent, text="Disconnect", command=self._disconnect_epic).grid(
-            row=1, column=1, sticky="w", padx=(6, 0)
+        self._accounts_tv.heading("name", text="Epic Display Name")
+        self._accounts_tv.column("name", stretch=True)
+        self._accounts_tv.grid(row=0, column=0, sticky="ew")
+
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self._accounts_tv.yview)
+        self._accounts_tv.configure(yscrollcommand=vsb.set)
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        # Buttons row
+        btn_frame = ttk.Frame(parent)
+        btn_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        ttk.Button(btn_frame, text="+ Add Account", command=self._connect_epic).pack(side=tk.LEFT)
+        self._remove_acc_btn = ttk.Button(
+            btn_frame, text="✕ Remove Selected", command=self._remove_selected_account,
         )
+        self._remove_acc_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=(12, 8)
+        )
+
+        ttk.Label(
+            parent,
+            text=(
+                "When you're in a match, the Stats API detects which account is\n"
+                "playing and uploads to that account automatically."
+            ),
+            foreground="#9E9E9E",
+            justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w")
 
     # ── tab: Rocket League ────────────────────────────────────────────────────
 
@@ -285,7 +325,7 @@ class SettingsDialog(tk.Toplevel):
         self._ballcam_var.set(bool(self.cfg.ballcam_enabled))
         self._ballcam_token_var.set(self.cfg.ballcam_token)
         self._ballcam_vis_var.set(self.cfg.ballcam_visibility)
-        self._refresh_epic_status()
+        self._refresh_accounts_list()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._refresh_ini_status()
@@ -434,14 +474,30 @@ class SettingsDialog(tk.Toplevel):
                 foreground="#FF9800",
             )
 
-    def _refresh_epic_status(self) -> None:
-        name = self.cfg.epic_display_name.strip()
-        if self.cfg.has_epic_auth and name:
-            self._epic_status_lbl.config(text=f"Connected as {name}", foreground="#4CAF50")
-        elif self.cfg.has_epic_auth:
-            self._epic_status_lbl.config(text="Connected (display name unknown)", foreground="#4CAF50")
-        else:
-            self._epic_status_lbl.config(text="Not connected", foreground="#9E9E9E")
+    def _refresh_accounts_list(self) -> None:
+        """Repopulate the accounts Treeview from config."""
+        self._accounts_tv.delete(*self._accounts_tv.get_children())
+        for acc in self.cfg.get_epic_accounts():
+            name = acc.get("display_name") or acc.get("account_id") or "Unknown"
+            self._accounts_tv.insert("", tk.END, values=(name,))
+
+    def _remove_selected_account(self) -> None:
+        sel = self._accounts_tv.selection()
+        if not sel:
+            messagebox.showinfo("No Selection", "Select an account to remove.", parent=self)
+            return
+        # Map Treeview row back to account list index
+        rows = self._accounts_tv.get_children()
+        idx = rows.index(sel[0])
+        accounts = self.cfg.get_epic_accounts()
+        if idx >= len(accounts):
+            return
+        acc = accounts[idx]
+        name = acc.get("display_name", "Unknown")
+        if messagebox.askyesno("Remove Account", f"Remove '{name}'?", parent=self):
+            self.cfg.remove_epic_account(acc.get("account_id", ""))
+            self._refresh_accounts_list()
+            self.app._refresh_epic_status_ui()
 
     def _connect_epic(self) -> None:
         from core.epic_auth import EpicClient, EpicAuthError
@@ -497,11 +553,12 @@ class SettingsDialog(tk.Toplevel):
                 try:
                     data = client.login_with_code(code)
                     def _ok():
-                        self.cfg.epic_refresh_token = data["refresh_token"]
-                        self.cfg.epic_account_id    = data["account_id"]
-                        self.cfg.epic_display_name  = data["display_name"]
-                        self.cfg.save()
-                        self._refresh_epic_status()
+                        self.cfg.add_epic_account({
+                            "refresh_token": data["refresh_token"],
+                            "account_id":    data["account_id"],
+                            "display_name":  data["display_name"],
+                        })
+                        self._refresh_accounts_list()
                         self.app._refresh_epic_status_ui()
                         dlg.destroy()
                     dlg.after(0, _ok)
@@ -597,14 +654,6 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showinfo("Export Logs", f"Logs saved to:\n{path}", parent=self)
         except OSError as exc:
             messagebox.showerror("Export Failed", str(exc), parent=self)
-
-    def _disconnect_epic(self) -> None:
-        self.cfg.epic_refresh_token = ""
-        self.cfg.epic_account_id    = ""
-        self.cfg.epic_display_name  = ""
-        self.cfg.save()
-        self._refresh_epic_status()
-        self.app._refresh_epic_status_ui()
 
     def _current_ini_path(self) -> Path | None:
         install = self._rl_path_var.get().strip()

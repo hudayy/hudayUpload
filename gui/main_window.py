@@ -93,6 +93,10 @@ class MainWindow:
         )
         self._btn_settings.pack(side=tk.RIGHT)
 
+        ttk.Button(
+            header, text="Minimize", command=self._minimize_to_tray, width=9
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
         # ── status section ───────────────────────────────────────────────────
         status_frame = ttk.LabelFrame(root, text="Status", padding=(12, 6, 12, 10))
         status_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
@@ -175,7 +179,7 @@ class MainWindow:
         toolbar.pack(fill=tk.X)
 
         self._btn_upload = ttk.Button(
-            toolbar, text="↑ Upload Now", command=self.app.trigger_manual_upload, width=14
+            toolbar, text="↑ Upload Now", command=self.app.trigger_manual_upload,
         )
         self._btn_upload.pack(side=tk.LEFT, padx=(0, 6))
 
@@ -183,17 +187,12 @@ class MainWindow:
             toolbar,
             text="🔗 Ballchasing",
             command=lambda: webbrowser.open("https://ballchasing.com"),
-            width=14,
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         self._btn_pause = ttk.Button(
-            toolbar, text="⏸ Pause", command=self.app.toggle_pause, width=10
+            toolbar, text="⏸ Pause", command=self.app.toggle_pause,
         )
         self._btn_pause.pack(side=tk.LEFT)
-
-        ttk.Button(
-            toolbar, text="Minimize to Tray", command=self._minimize_to_tray, width=16
-        ).pack(side=tk.RIGHT)
 
         # ── status bar ────────────────────────────────────────────────────────
         self._statusbar = ttk.Label(
@@ -293,6 +292,14 @@ class MainWindow:
         else:
             self._banner.pack_forget()
 
+    def set_unknown_player(self, player_name: str) -> None:
+        """Warn that the current RL player isn't linked to any Epic account."""
+        self._dot_epic.set_color(_CLR_WARN)
+        self._lbl_epic.set_action(
+            f"⚠ Playing as {player_name} — not linked. Click to add account.",
+            self._open_settings,
+        )
+
     def set_paused_state(self, paused: bool) -> None:
         """Update the pause button and Stats API dot to reflect paused/resumed state."""
         if paused:
@@ -348,9 +355,15 @@ class MainWindow:
         else:
             self.set_bc_status(False)
             self.set_statusbar("Open ⚙ Settings to finish setup.")
-        if cfg.has_epic_auth:
-            name = cfg.epic_display_name.strip()
-            self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
+        accounts = cfg.get_epic_accounts()
+        if accounts:
+            if len(accounts) == 1:
+                name = accounts[0].get("display_name", "").strip()
+                self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
+            else:
+                names = ", ".join(a.get("display_name", "?") for a in accounts[:3])
+                suffix = f" (+{len(accounts)-3} more)" if len(accounts) > 3 else ""
+                self.set_epic_status(True, f"{len(accounts)} accounts: {names}{suffix}")
         else:
             self.set_epic_status(False)
 

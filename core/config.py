@@ -28,7 +28,9 @@ _DEFAULTS = {
     "ballcam_enabled": False,
     "ballcam_token": "",
     "ballcam_visibility": "public",
-    # Epic Games auth (populated after user logs in)
+    # Epic Games auth — multi-account list (populated after user logs in)
+    "epic_accounts": [],        # list of {refresh_token, account_id, display_name}
+    # Legacy single-account fields (kept for backward compat; migrated on load)
     "epic_refresh_token": "",
     "epic_account_id": "",
     "epic_display_name": "",
@@ -52,6 +54,19 @@ class Config:
             self._data.update({k: v for k, v in stored.items() if k in _DEFAULTS})
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             pass
+        self._migrate_legacy_epic()
+
+    def _migrate_legacy_epic(self) -> None:
+        """One-time migration: copy old single-account fields into epic_accounts list."""
+        if self._data.get("epic_accounts"):
+            return  # already using new format
+        token = self._data.get("epic_refresh_token", "")
+        if token:
+            self._data["epic_accounts"] = [{
+                "refresh_token": token,
+                "account_id": self._data.get("epic_account_id", ""),
+                "display_name": self._data.get("epic_display_name", ""),
+            }]
 
     def save(self) -> None:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -106,7 +121,39 @@ class Config:
 
     @property
     def has_epic_auth(self) -> bool:
-        return bool(self._data.get("epic_refresh_token", "").strip())
+        return bool(self._data.get("epic_accounts"))
+
+    # ── multi-account Epic helpers ────────────────────────────────────────
+    def get_epic_accounts(self) -> list:
+        """Return the list of connected Epic accounts."""
+        return self._data.get("epic_accounts", [])
+
+    def add_epic_account(self, account: dict) -> None:
+        """Add or replace an account (matched by account_id). Saves immediately."""
+        accounts = [a for a in self._data.get("epic_accounts", [])
+                    if a.get("account_id") != account.get("account_id")]
+        accounts.append(account)
+        self._data["epic_accounts"] = accounts
+        self.save()
+
+    def remove_epic_account(self, account_id: str) -> None:
+        """Remove an account by account_id. Saves immediately."""
+        self._data["epic_accounts"] = [
+            a for a in self._data.get("epic_accounts", [])
+            if a.get("account_id") != account_id
+        ]
+        self.save()
+
+    def update_epic_account_token(
+        self, account_id: str, refresh_token: str, display_name: str
+    ) -> None:
+        """Update the refresh token (and display name) for a stored account."""
+        for a in self._data.get("epic_accounts", []):
+            if a.get("account_id") == account_id:
+                a["refresh_token"] = refresh_token
+                a["display_name"] = display_name
+                break
+        self.save()
 
     def ini_path(self) -> Path | None:
         """Derive the ini path from the replays folder — both live under TAGame/.
