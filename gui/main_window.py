@@ -292,13 +292,16 @@ class MainWindow:
         else:
             self._banner.pack_forget()
 
-    def set_unknown_player(self, player_name: str) -> None:
-        """Warn that the current RL player isn't linked to any Epic account."""
-        self._dot_epic.set_color(_CLR_WARN)
-        self._lbl_epic.set_action(
-            f"⚠ Playing as {player_name} — not linked. Click to add account.",
-            self._open_settings,
-        )
+    def set_stats_api_enabled(self, enabled: bool) -> None:
+        """Called when the 'Enable Stats API' setting changes."""
+        if enabled:
+            self._btn_pause.config(state="normal")
+            # Watcher will post connecting/connected events to update the dot naturally
+        else:
+            self._btn_pause.config(state="disabled")
+            self._dot_rl.set_color(_CLR_NEUTRAL)
+            self._lbl_rl.set_normal("Stats API disabled — enable in ⚙ Settings → Rocket League")
+            self.set_statusbar("Stats API disabled. Enable it in Settings → Rocket League tab.")
 
     def set_paused_state(self, paused: bool) -> None:
         """Update the pause button and Stats API dot to reflect paused/resumed state."""
@@ -357,15 +360,13 @@ class MainWindow:
             self.set_statusbar("Open ⚙ Settings to finish setup.")
         accounts = cfg.get_epic_accounts()
         if accounts:
-            if len(accounts) == 1:
-                name = accounts[0].get("display_name", "").strip()
-                self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
-            else:
-                names = ", ".join(a.get("display_name", "?") for a in accounts[:3])
-                suffix = f" (+{len(accounts)-3} more)" if len(accounts) > 3 else ""
-                self.set_epic_status(True, f"{len(accounts)} accounts: {names}{suffix}")
+            name = accounts[0].get("display_name", "").strip()
+            self.set_epic_status(True, f"Connected as {name}" if name else "Connected")
         else:
             self.set_epic_status(False)
+
+        if not cfg.stats_api_enabled:
+            self.set_stats_api_enabled(False)
 
     def _open_settings(self) -> None:
         from gui.settings_dialog import SettingsDialog

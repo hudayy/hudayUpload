@@ -24,10 +24,8 @@ _DEFAULTS = {
     "upload_every_n_games": 15,
     # Rocky upload (lexore.ca)
     "rocky_enabled": False,
-    # BallCam.tv upload
-    "ballcam_enabled": False,
-    "ballcam_token": "",
-    "ballcam_visibility": "public",
+    # Stats API
+    "stats_api_enabled": True,
     # Epic Games auth — multi-account list (populated after user logs in)
     "epic_accounts": [],        # list of {refresh_token, account_id, display_name}
     # Legacy single-account fields (kept for backward compat; migrated on load)

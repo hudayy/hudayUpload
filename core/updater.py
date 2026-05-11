@@ -24,7 +24,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.6.9"
+VERSION = "1.7.0"
 
 _GITHUB_API = "https://api.github.com/repos/hudayy/hudayUpload/releases/latest"
 _EXE_ASSET_NAME = "hudayUpload.exe"

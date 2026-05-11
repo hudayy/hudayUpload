@@ -11,10 +11,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BC_UPLOAD_URL      = "https://ballchasing.com/api/v2/upload"
-_BC_PING_URL        = "https://ballchasing.com/api/"
-_ROCKY_UPLOAD_URL   = "https://lexore.ca/rocky/api/upload"
-_BALLCAM_UPLOAD_URL = "https://api.ballcam.tv/replays"
+_BC_UPLOAD_URL    = "https://ballchasing.com/api/v2/upload"
+_BC_PING_URL      = "https://ballchasing.com/api/"
+_ROCKY_UPLOAD_URL = "https://lexore.ca/rocky/api/upload"
 
 
 @dataclass
@@ -158,68 +157,6 @@ class RockyClient:
         except requests.RequestException as exc:
             logger.error("Rocky: upload error for %s: %s", filename, exc)
             return UploadResult(ok=False, error=str(exc), filename=filename)
-
-
-class BallcamClient:
-    """Upload replays to BallCam.tv.
-
-    Requires a Personal Access Token (PAT) from https://ballcam.tv.
-    """
-
-    _MAX_RETRIES = 3
-
-    def __init__(self, token: str, visibility: str = "public") -> None:
-        self.token = token
-        self.visibility = visibility
-        self._session = requests.Session()
-        self._session.headers["Authorization"] = f"Bearer {token}"
-        self._session.headers["User-Agent"] = "hudayUpload/1.0"
-
-    def upload_bytes(self, filename: str, data: bytes, title: str = "") -> UploadResult:
-        """Upload replay from in-memory bytes to BallCam.tv (with retries)."""
-        form: dict = {"visibility": self.visibility}
-        if title:
-            form["title"] = title[:100]  # API max 100 chars
-
-        last_exc: Exception | None = None
-        for attempt in range(1, self._MAX_RETRIES + 1):
-            try:
-                r = self._session.post(
-                    _BALLCAM_UPLOAD_URL,
-                    files={"file": (filename, data, "application/octet-stream")},
-                    data=form,
-                    timeout=60,
-                )
-                if r.status_code == 201:
-                    body = r.json()
-                    replay_id = body.get("replay", {}).get("id", "")
-                    url = f"https://ballcam.tv/replay/{replay_id}" if replay_id else ""
-                    logger.info("BallCam: uploaded %s → %s", filename, url)
-                    return UploadResult(ok=True, replay_id=replay_id, url=url, filename=filename)
-                err_body = {}
-                try:
-                    err_body = r.json()
-                except Exception:
-                    pass
-                err = err_body.get("message") or f"HTTP {r.status_code}: {r.text[:200]}"
-                logger.error("BallCam: upload failed for %s: %s", filename, err)
-                return UploadResult(ok=False, error=err, filename=filename)
-            except requests.RequestException as exc:
-                last_exc = exc
-                if attempt < self._MAX_RETRIES:
-                    wait = 2 ** attempt  # 2s, 4s
-                    logger.warning("BallCam: connection error (attempt %d/%d), retrying in %ds: %s",
-                                   attempt, self._MAX_RETRIES, wait, exc)
-                    time.sleep(wait)
-                    # Reset the session to get a fresh connection
-                    self._session.close()
-                    self._session = requests.Session()
-                    self._session.headers["Authorization"] = f"Bearer {self.token}"
-                    self._session.headers["User-Agent"] = "hudayUpload/1.0"
-
-        logger.error("BallCam: upload error for %s after %d attempts: %s",
-                      filename, self._MAX_RETRIES, last_exc)
-        return UploadResult(ok=False, error=str(last_exc), filename=filename)
 
 
 # ── replay-finding helpers ────────────────────────────────────────────────────

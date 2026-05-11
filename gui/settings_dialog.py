@@ -173,139 +173,80 @@ class SettingsDialog(tk.Toplevel):
         )
 
         self._rocky_var = tk.BooleanVar()
-        rocky_cb = ttk.Checkbutton(
+        ttk.Checkbutton(
             parent,
             text="Also upload to Rocky",
             variable=self._rocky_var,
-        )
-        rocky_cb.grid(row=5, column=0, columnspan=2, sticky="w")
+        ).grid(row=5, column=0, columnspan=2, sticky="w")
 
         ttk.Button(
-            parent, text="What is Rocky? ↗",
-            command=lambda: webbrowser.open("https://github.com/LEX0RE/rockpload"),
+            parent, text="Rocky",
+            command=lambda: webbrowser.open("https://lexore.ca/rocky/"),
         ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
-        ttk.Separator(parent, orient="horizontal").grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(12, 8)
-        )
-
-        self._ballcam_var = tk.BooleanVar()
-        ttk.Checkbutton(
-            parent,
-            text="Also upload to BallCam.tv",
-            variable=self._ballcam_var,
-        ).grid(row=8, column=0, columnspan=2, sticky="w")
-
-        ttk.Label(parent, text="BallCam Token").grid(row=9, column=0, sticky="w", pady=(6, 3))
-        ballcam_token_row = ttk.Frame(parent)
-        ballcam_token_row.grid(row=9, column=1, sticky="ew", pady=(6, 3))
-        self._ballcam_token_var = tk.StringVar()
-        self._ballcam_token_entry = ttk.Entry(
-            ballcam_token_row, textvariable=self._ballcam_token_var, show="•", width=32
-        )
-        self._ballcam_token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._show_ballcam_token = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            ballcam_token_row, text="Show",
-            variable=self._show_ballcam_token,
-            command=self._toggle_ballcam_token_visibility,
-        ).pack(side=tk.LEFT, padx=(4, 0))
-
-        ttk.Button(
-            parent, text="Get BallCam token ↗",
-            command=lambda: webbrowser.open("https://ballcam.tv"),
-        ).grid(row=10, column=1, sticky="w", pady=(0, 2))
-
-        ttk.Label(parent, text="BallCam Visibility").grid(row=11, column=0, sticky="w", pady=(4, 3))
-        self._ballcam_vis_var = tk.StringVar()
-        ttk.Combobox(
-            parent, textvariable=self._ballcam_vis_var,
-            values=["public", "unlisted"],
-            state="readonly", width=12,
-        ).grid(row=11, column=1, sticky="w", pady=(4, 3))
 
     # ── tab: Epic Games ───────────────────────────────────────────────────────
 
     def _build_epic(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
 
-        ttk.Label(parent, text="Connected Accounts:").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        self._epic_status_lbl = ttk.Label(parent, text="Not connected", foreground="#9E9E9E")
+        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Button(parent, text="Connect Epic Account", command=self._connect_epic).grid(
+            row=1, column=0, sticky="w"
         )
-
-        # Account list (Treeview for theme consistency)
-        list_frame = ttk.Frame(parent)
-        list_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
-        list_frame.columnconfigure(0, weight=1)
-
-        self._accounts_tv = ttk.Treeview(
-            list_frame, columns=("name",), show="headings",
-            height=4, selectmode="browse",
+        ttk.Button(parent, text="Disconnect", command=self._disconnect_epic).grid(
+            row=1, column=1, sticky="w", padx=(6, 0)
         )
-        self._accounts_tv.heading("name", text="Epic Display Name")
-        self._accounts_tv.column("name", stretch=True)
-        self._accounts_tv.grid(row=0, column=0, sticky="ew")
-
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self._accounts_tv.yview)
-        self._accounts_tv.configure(yscrollcommand=vsb.set)
-        vsb.grid(row=0, column=1, sticky="ns")
-
-        # Buttons row
-        btn_frame = ttk.Frame(parent)
-        btn_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-        ttk.Button(btn_frame, text="+ Add Account", command=self._connect_epic).pack(side=tk.LEFT)
-        self._remove_acc_btn = ttk.Button(
-            btn_frame, text="✕ Remove Selected", command=self._remove_selected_account,
-        )
-        self._remove_acc_btn.pack(side=tk.LEFT, padx=(8, 0))
-
-        ttk.Separator(parent, orient="horizontal").grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(12, 8)
-        )
-
-        ttk.Label(
-            parent,
-            text=(
-                "When you're in a match, the Stats API detects which account is\n"
-                "playing and uploads to that account automatically."
-            ),
-            foreground="#9E9E9E",
-            justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w")
 
     # ── tab: Rocket League ────────────────────────────────────────────────────
 
     def _build_rocket_league(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
 
-        ttk.Label(parent, text="Install Path").grid(row=0, column=0, sticky="w", pady=3)
+        self._stats_api_enabled_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            parent,
+            text="Enable Stats API connection",
+            variable=self._stats_api_enabled_var,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        ttk.Label(
+            parent,
+            text="Disable if the Stats API causes frame drops (e.g. private matches).",
+            foreground="#9E9E9E",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8)
+        )
+
+        ttk.Label(parent, text="Install Path").grid(row=3, column=0, sticky="w", pady=3)
         self._rl_path_var = tk.StringVar()
-        ttk.Entry(parent, textvariable=self._rl_path_var, width=36).grid(row=0, column=1, sticky="ew", pady=3)
-        ttk.Button(parent, text="Browse…", command=self._browse_rl).grid(row=0, column=2, padx=(4, 0), pady=3)
+        ttk.Entry(parent, textvariable=self._rl_path_var, width=36).grid(row=3, column=1, sticky="ew", pady=3)
+        ttk.Button(parent, text="Browse…", command=self._browse_rl).grid(row=3, column=2, padx=(4, 0), pady=3)
 
-        ttk.Label(parent, text="Replays Folder").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Label(parent, text="Replays Folder").grid(row=4, column=0, sticky="w", pady=3)
         self._replays_var = tk.StringVar()
-        ttk.Entry(parent, textvariable=self._replays_var, width=36).grid(row=1, column=1, sticky="ew", pady=3)
-        ttk.Button(parent, text="Browse…", command=self._browse_replays).grid(row=1, column=2, padx=(4, 0), pady=3)
+        ttk.Entry(parent, textvariable=self._replays_var, width=36).grid(row=4, column=1, sticky="ew", pady=3)
+        ttk.Button(parent, text="Browse…", command=self._browse_replays).grid(row=4, column=2, padx=(4, 0), pady=3)
 
-        ttk.Label(parent, text="Stats API Port").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Label(parent, text="Stats API Port").grid(row=5, column=0, sticky="w", pady=3)
         self._port_var = tk.StringVar()
-        ttk.Entry(parent, textvariable=self._port_var, width=8).grid(row=2, column=1, sticky="w", pady=3)
+        ttk.Entry(parent, textvariable=self._port_var, width=8).grid(row=5, column=1, sticky="w", pady=3)
 
         self._ini_derived_lbl = ttk.Label(
             parent, text="Stats API ini: (set Replays Folder first)",
             foreground="#9E9E9E", wraplength=400,
         )
-        self._ini_derived_lbl.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._ini_derived_lbl.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         self._ini_status_lbl = ttk.Label(parent, text="", wraplength=400)
-        self._ini_status_lbl.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        self._ini_status_lbl.grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         ttk.Button(
             parent, text="Configure Stats API automatically",
             command=self._configure_stats_api,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # ── load / save ──────────────────────────────────────────────────────────
 
@@ -322,10 +263,8 @@ class SettingsDialog(tk.Toplevel):
         self._batch_var.set(int(self.cfg.upload_batch_size))
         self._every_n_var.set(int(self.cfg.upload_every_n_games))
         self._rocky_var.set(bool(self.cfg.rocky_enabled))
-        self._ballcam_var.set(bool(self.cfg.ballcam_enabled))
-        self._ballcam_token_var.set(self.cfg.ballcam_token)
-        self._ballcam_vis_var.set(self.cfg.ballcam_visibility)
-        self._refresh_accounts_list()
+        self._stats_api_enabled_var.set(bool(self.cfg.stats_api_enabled))
+        self._refresh_epic_status()
         self._replays_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._rl_path_var.trace_add("write", lambda *_: self._refresh_ini_status())
         self._refresh_ini_status()
@@ -352,9 +291,7 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.upload_batch_size      = self._batch_var.get()
         self.cfg.upload_every_n_games   = self._every_n_var.get()
         self.cfg.rocky_enabled          = self._rocky_var.get()
-        self.cfg.ballcam_enabled        = self._ballcam_var.get()
-        self.cfg.ballcam_token          = self._ballcam_token_var.get().strip()
-        self.cfg.ballcam_visibility     = self._ballcam_vis_var.get()
+        self.cfg.stats_api_enabled      = self._stats_api_enabled_var.get()
         self.cfg.save()
         _apply_startup(self.cfg.launch_at_startup)
 
@@ -365,9 +302,6 @@ class SettingsDialog(tk.Toplevel):
 
     def _toggle_token_visibility(self) -> None:
         self._token_entry.config(show="" if self._show_token.get() else "•")
-
-    def _toggle_ballcam_token_visibility(self) -> None:
-        self._ballcam_token_entry.config(show="" if self._show_ballcam_token.get() else "•")
 
     def _browse_rl(self) -> None:
         d = filedialog.askdirectory(
@@ -474,30 +408,22 @@ class SettingsDialog(tk.Toplevel):
                 foreground="#FF9800",
             )
 
-    def _refresh_accounts_list(self) -> None:
-        """Repopulate the accounts Treeview from config."""
-        self._accounts_tv.delete(*self._accounts_tv.get_children())
-        for acc in self.cfg.get_epic_accounts():
-            name = acc.get("display_name") or acc.get("account_id") or "Unknown"
-            self._accounts_tv.insert("", tk.END, values=(name,))
-
-    def _remove_selected_account(self) -> None:
-        sel = self._accounts_tv.selection()
-        if not sel:
-            messagebox.showinfo("No Selection", "Select an account to remove.", parent=self)
-            return
-        # Map Treeview row back to account list index
-        rows = self._accounts_tv.get_children()
-        idx = rows.index(sel[0])
+    def _refresh_epic_status(self) -> None:
         accounts = self.cfg.get_epic_accounts()
-        if idx >= len(accounts):
-            return
-        acc = accounts[idx]
-        name = acc.get("display_name", "Unknown")
-        if messagebox.askyesno("Remove Account", f"Remove '{name}'?", parent=self):
-            self.cfg.remove_epic_account(acc.get("account_id", ""))
-            self._refresh_accounts_list()
-            self.app._refresh_epic_status_ui()
+        if accounts:
+            name = accounts[0].get("display_name", "").strip()
+            if name:
+                self._epic_status_lbl.config(text=f"Connected as {name}", foreground="#4CAF50")
+            else:
+                self._epic_status_lbl.config(text="Connected (display name unknown)", foreground="#4CAF50")
+        else:
+            self._epic_status_lbl.config(text="Not connected", foreground="#9E9E9E")
+
+    def _disconnect_epic(self) -> None:
+        self.cfg._data["epic_accounts"] = []
+        self.cfg.save()
+        self._refresh_epic_status()
+        self.app._refresh_epic_status_ui()
 
     def _connect_epic(self) -> None:
         from core.epic_auth import EpicClient, EpicAuthError
@@ -553,12 +479,14 @@ class SettingsDialog(tk.Toplevel):
                 try:
                     data = client.login_with_code(code)
                     def _ok():
-                        self.cfg.add_epic_account({
+                        # Single-account mode: replace any existing account
+                        self.cfg._data["epic_accounts"] = [{
                             "refresh_token": data["refresh_token"],
                             "account_id":    data["account_id"],
                             "display_name":  data["display_name"],
-                        })
-                        self._refresh_accounts_list()
+                        }]
+                        self.cfg.save()
+                        self._refresh_epic_status()
                         self.app._refresh_epic_status_ui()
                         dlg.destroy()
                     dlg.after(0, _ok)

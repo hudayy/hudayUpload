@@ -13,7 +13,7 @@ from core.epic_auth import EpicAuthError, EpicClient
 from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
 from core.updater import check_for_update, download_and_install
-from core.uploader import BallcamClient, BallchasingClient, RockyClient, UploadResult
+from core.uploader import BallchasingClient, RockyClient, UploadResult
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ def _is_rl_running() -> bool:
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq RocketLeague.exe", "/NH"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return "RocketLeague.exe" in out.stdout
     except Exception:
@@ -54,9 +55,8 @@ class Application:
         # Pause flag — when True the StatsWatcher is stopped and won't reconnect
         self._paused: bool = False
         self._rl_close_watcher_running: bool = False
-        # Active Epic account tracking (set via Stats API player detection)
+        # Current RL player name (detected via Stats API, for display only)
         self._current_rl_player: str = ""
-        self._active_epic_account_id: str = ""
 
     # ── startup / teardown ────────────────────────────────────────────────────
 
@@ -70,7 +70,10 @@ class Application:
         if self.config.start_minimized and self._tray is not None:
             self.root.withdraw()
 
-        self._watcher.start()
+        if self.config.stats_api_enabled:
+            self._watcher.start()
+        else:
+            self._win.set_stats_api_enabled(False)
         self._start_event_pump()
         self._verify_bc_token_async()
         self._check_for_update_async()
@@ -102,13 +105,16 @@ class Application:
     def on_settings_changed(self) -> None:
         self._watcher.stop()
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
-        if not self._paused:
+        if self.config.stats_api_enabled and not self._paused:
             self._watcher.start()
+        self.root.after(0, self._win.set_stats_api_enabled, self.config.stats_api_enabled)
         self._verify_bc_token_async()
         self._refresh_epic_status_ui()
 
     def toggle_pause(self) -> None:
         """Pause or resume the Stats API connection to reduce in-game CPU load."""
+        if not self.config.stats_api_enabled:
+            return  # can't pause/resume when the Stats API is disabled in settings
         if self._paused:
             self._paused = False
             self._watcher.start()
@@ -167,35 +173,17 @@ class Application:
     def _refresh_epic_status_ui(self) -> None:
         accounts = self.config.get_epic_accounts()
         if accounts:
-            if len(accounts) == 1:
-                name = accounts[0].get("display_name", "").strip()
-                self.root.after(0, self._win.set_epic_status, True,
-                                f"Connected as {name}" if name else "Connected")
-            else:
-                names = ", ".join(a.get("display_name", "?") for a in accounts[:3])
-                suffix = f" (+{len(accounts)-3} more)" if len(accounts) > 3 else ""
-                self.root.after(0, self._win.set_epic_status, True,
-                                f"{len(accounts)} accounts: {names}{suffix}")
+            name = accounts[0].get("display_name", "").strip()
+            self.root.after(0, self._win.set_epic_status, True,
+                            f"Connected as {name}" if name else "Connected")
         else:
             self.root.after(0, self._win.set_epic_status, False,
                             "Not connected — open ⚙ Settings")
 
     def _get_active_epic_account(self) -> "dict | None":
-        """Return the Epic account to use for upload.
-
-        Priority:
-        1. Account detected via Stats API (primary player name matched to account)
-        2. First configured account as fallback
-        3. None if no accounts are configured
-        """
+        """Return the single configured Epic account, or None if not connected."""
         accounts = self.config.get_epic_accounts()
-        if not accounts:
-            return None
-        if self._active_epic_account_id:
-            for acc in accounts:
-                if acc.get("account_id") == self._active_epic_account_id:
-                    return acc
-        return accounts[0]
+        return accounts[0] if accounts else None
 
     # ── event pump ───────────────────────────────────────────────────────────
 
@@ -245,7 +233,7 @@ class Application:
                 }
                 logger.debug("Stored match_state for %s", guid)
 
-            # Detect which Epic account is active based on the primary player name
+            # Show who's currently playing in the Epic Games status row
             primary_name = ""
             for p in msg.get("players", []):
                 if p.get("primary"):
@@ -254,24 +242,8 @@ class Application:
 
             if primary_name and primary_name != self._current_rl_player:
                 self._current_rl_player = primary_name
-                accounts = self.config.get_epic_accounts()
-                matched = None
-                for acc in accounts:
-                    acc_name = (acc.get("display_name") or "").rstrip(".").strip().lower()
-                    if primary_name.strip().lower() == acc_name:
-                        matched = acc
-                        break
-
-                if matched:
-                    self._active_epic_account_id = matched["account_id"]
-                    disp = matched.get("display_name", primary_name)
-                    logger.info("Detected active RL account: %s", disp)
-                    self._win.set_epic_status(True, f"Playing as {disp}")
-                elif accounts:
-                    # Playing on an account not in the linked list
-                    self._active_epic_account_id = ""
-                    logger.info("Unrecognised RL player: %s", primary_name)
-                    self._win.set_unknown_player(primary_name)
+                logger.info("RL primary player: %s", primary_name)
+                self._win.set_epic_status(True, f"Playing as {primary_name}")
         elif t == "game_ended":
             now = time.monotonic()
             if now - self._last_game_end < 60:
@@ -485,20 +457,6 @@ class Application:
                     else:
                         logger.error("Rocky upload failed — %s — %s", filename, rocky_result.error)
 
-                # Optional BallCam.tv upload
-                if getattr(self.config, "ballcam_enabled", False) and self.config.has_ballcam_token:
-                    self.root.after(0, self._win.set_statusbar,
-                                    f"Uploading {i}/{len(entries)}: {upload_name} to BallCam.tv…")
-                    ballcam_client = BallcamClient(
-                        self.config.ballcam_token,
-                        getattr(self.config, "ballcam_visibility", "public"),
-                    )
-                    ballcam_result = ballcam_client.upload_bytes(upload_name, data, title=title)
-                    if ballcam_result.ok:
-                        logger.info("BallCam upload successful — %s — %s", filename, ballcam_result.url)
-                    else:
-                        logger.error("BallCam upload failed — %s — %s", filename, ballcam_result.error)
-
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
@@ -631,7 +589,10 @@ class Application:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Upload Now", lambda: self.trigger_manual_upload()),
                 pystray.MenuItem(
-                    lambda item: "Resume Monitoring" if self._paused else "Pause Monitoring",
+                    lambda item: (
+                        "Stats API Disabled" if not self.config.stats_api_enabled
+                        else ("Resume Monitoring" if self._paused else "Pause Monitoring")
+                    ),
                     lambda: self.root.after(0, self.toggle_pause),
                 ),
                 pystray.Menu.SEPARATOR,
