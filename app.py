@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import Config
-from core.epic_auth import EpicAuthError, EpicClient
+from core.epic_auth import EpicAuthError, EpicClient, detect_rl_versions
 from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
 from core.updater import check_for_update, download_and_install
@@ -75,6 +75,7 @@ class Application:
         else:
             self._win.set_stats_api_enabled(False)
         self._start_event_pump()
+        self._detect_rl_versions_async()
         self._verify_bc_token_async()
         self._check_for_update_async()
         self._write_stats_api_tickrate()
@@ -108,6 +109,7 @@ class Application:
         if self.config.stats_api_enabled and not self._paused:
             self._watcher.start()
         self.root.after(0, self._win.set_stats_api_enabled, self.config.stats_api_enabled)
+        self._detect_rl_versions_async()
         self._verify_bc_token_async()
         self._refresh_epic_status_ui()
 
@@ -514,6 +516,32 @@ class Application:
             url=result.url,
             error=result.error,
         )
+
+    # ── RL version detection ──────────────────────────────────────────────────
+
+    def _detect_rl_versions_async(self) -> None:
+        """Scan the RL binary in a background thread to update PsyNet constants.
+
+        Called at startup and whenever the RL install path changes in Settings.
+        If the path is empty or the binary is absent, falls back to the built-in
+        constants (which worked for the last known RL version).
+        """
+        install_path = self.config.rl_install_path
+        if not install_path:
+            logger.debug(
+                "RL install path not configured — skipping PsyNet version detection"
+            )
+            return
+
+        def _scan() -> None:
+            ok = detect_rl_versions(install_path)
+            if not ok:
+                logger.warning(
+                    "PsyNet version detection failed — built-in fallbacks will be used; "
+                    "if you see VersionMismatch errors, verify the RL install path in Settings"
+                )
+
+        threading.Thread(target=_scan, daemon=True, name="rl-version-scan").start()
 
     # ── ballchasing auth check ────────────────────────────────────────────────
 

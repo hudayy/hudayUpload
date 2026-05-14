@@ -24,8 +24,11 @@ import hashlib
 import hmac as _hmac_mod
 import json
 import logging
+import mmap
+import re
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -45,13 +48,18 @@ _EOS_AUTH_HEADER   = "eHl6YTc4OTFwNUQ3czlSNkdtNm1vVEhXR2xvZXJwN0I6S25oMThkdTROVm
 _EOS_DEPLOYMENT_ID = "da32ae9c12ae40e8a112c52e1f17f3ba"  # Rocket League
 
 # ── PsyNet constants ───────────────────────────────────────────────────────────
-_PSY_BASE_URL     = "https://api.rlpp.psynet.gg/rpc"
-_PSY_GAME_VER     = "260420.86069.515605"
-_PSY_FEATURE_SET  = "PrimeUpdate58_1"
-_PSY_BUILD_ID     = "1273328361"
-_PSY_SIG_KEY      = b"c338bd36fb8c42b1a431d30add939fc7"
-_PSY_HTTP_AGENT   = f"RL Win/{_PSY_GAME_VER} gzip (x86_64-pc-win32) curl-7.67.0 Schannel"
-_PSY_WS_AGENT     = f"RL Win/{_PSY_GAME_VER} gzip"
+_PSY_BASE_URL    = "https://api.rlpp.psynet.gg/rpc"
+_PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
+
+# These three are updated at runtime by detect_rl_versions(); the values below
+# are last-known fallbacks used only when the RL binary cannot be scanned.
+_PSY_GAME_VER    = "260420.86069.515605"
+_PSY_FEATURE_SET = "PrimeUpdate58_1"
+_PSY_BUILD_ID    = "1273328361"
+
+# Compiled patterns for binary scanning — module-level for reuse
+_RE_FEATURE_SET = re.compile(rb"PrimeUpdate\d+_\d+")
+_RE_BUILD_ID    = re.compile(rb"\b\d{9,11}\b")
 
 
 def get_auth_url() -> str:
@@ -62,6 +70,84 @@ def get_auth_url() -> str:
         f"?clientId={_EGS_CLIENT_ID}&responseType=code"
     )
     return f"https://www.epicgames.com/id/login?redirectUrl={quote(redirect)}"
+
+
+def detect_rl_versions(rl_install_path: str) -> bool:
+    """Scan the installed RL binary and update PsyNet version constants in-place.
+
+    The RL executable embeds the PsyNet FeatureSet string (e.g. "PrimeUpdate65_1")
+    and a numeric BuildID as plain ASCII.  After each Rocket League patch these
+    values change; scanning the binary at startup keeps the app compatible without
+    needing a new release.
+
+    Updates the module-level ``_PSY_FEATURE_SET`` and ``_PSY_BUILD_ID`` globals.
+    Returns True if the binary was read successfully (values may or may not have
+    changed), False if the binary was missing or the scan failed.
+    """
+    global _PSY_FEATURE_SET, _PSY_BUILD_ID
+
+    try:
+        bin_path = (
+            Path(rl_install_path) / "Binaries" / "Win64" / "RocketLeague.exe"
+        )
+        if not bin_path.exists():
+            logger.warning(
+                "detect_rl_versions: RL binary not found at %s — using built-in fallbacks",
+                bin_path,
+            )
+            return False
+
+        with open(bin_path, "rb") as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                fs_match = _RE_FEATURE_SET.search(mm)
+                if not fs_match:
+                    logger.warning(
+                        "detect_rl_versions: PrimeUpdate pattern not found in RL binary "
+                        "— using built-in fallbacks"
+                    )
+                    return False
+
+                new_fs = fs_match.group().decode("ascii")
+
+                # Search for BuildID (9–11 digit number) in a 4 KB window around
+                # the FeatureSet string — the two constants are typically nearby.
+                win_start = max(0, fs_match.start() - 4096)
+                win_end   = min(len(mm), fs_match.end() + 4096)
+                window    = bytes(mm[win_start:win_end])
+
+        new_bid = _PSY_BUILD_ID  # keep existing value if nothing plausible found
+        for m in _RE_BUILD_ID.finditer(window):
+            candidate = m.group().decode("ascii")
+            # Reject trivially bad values: all-same-digit or leading zeros
+            if len(set(candidate)) > 1 and candidate[0] != "0":
+                new_bid = candidate
+                break
+
+        changed = False
+        if new_fs != _PSY_FEATURE_SET:
+            logger.info("PsyNet FeatureSet updated: %s → %s", _PSY_FEATURE_SET, new_fs)
+            _PSY_FEATURE_SET = new_fs
+            changed = True
+        if new_bid != _PSY_BUILD_ID:
+            logger.info("PsyNet BuildID updated: %s → %s", _PSY_BUILD_ID, new_bid)
+            _PSY_BUILD_ID = new_bid
+            changed = True
+
+        if changed:
+            logger.info(
+                "PsyNet constants updated from RL binary (FeatureSet=%s, BuildID=%s)",
+                _PSY_FEATURE_SET, _PSY_BUILD_ID,
+            )
+        else:
+            logger.debug(
+                "PsyNet constants verified from RL binary (FeatureSet=%s, BuildID=%s)",
+                _PSY_FEATURE_SET, _PSY_BUILD_ID,
+            )
+        return True
+
+    except Exception as exc:
+        logger.warning("detect_rl_versions: binary scan failed — %s", exc)
+        return False
 
 
 class EpicAuthError(Exception):
@@ -247,7 +333,7 @@ class EpicClient:
             data=body_bytes,
             headers={
                 "Content-Type":   "application/x-www-form-urlencoded",
-                "User-Agent":     _PSY_HTTP_AGENT,
+                "User-Agent":     f"RL Win/{_PSY_GAME_VER} gzip (x86_64-pc-win32) curl-7.67.0 Schannel",
                 "PsyBuildID":     _PSY_BUILD_ID,
                 "PsyEnvironment": "Prod",
                 "PsyRequestID":   request_id,
@@ -277,7 +363,7 @@ class EpicClient:
             ws_url,
             header=[
                 f"PsyBuildID: {_PSY_BUILD_ID}",
-                f"User-Agent: {_PSY_WS_AGENT}",
+                f"User-Agent: RL Win/{_PSY_GAME_VER} gzip",
                 "PsyEnvironment: Prod",
                 f"PsyToken: {psy_token}",
                 f"PsySessionID: {session_id}",

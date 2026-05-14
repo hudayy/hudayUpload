@@ -3,7 +3,7 @@
 ; Build: ISCC installer.iss   (or run build.bat, which calls ISCC if it is found)
 
 #define MyAppName      "hudayUpload"
-#define MyAppVersion   "1.7.0"
+#define MyAppVersion   "1.7.1"
 #define MyAppPublisher "huday"
 #define MyAppURL       "https://github.com/hudayy/hudayUpload"
 #define MyAppExeName   "hudayUpload.exe"
