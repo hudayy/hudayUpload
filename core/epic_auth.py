@@ -52,14 +52,16 @@ _PSY_BASE_URL    = "https://api.rlpp.psynet.gg/rpc"
 _PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
 
 # These three are updated at runtime by detect_rl_versions(); the values below
-# are last-known fallbacks used only when the RL binary cannot be scanned.
-_PSY_GAME_VER    = "260420.86069.515605"
+# are last-known fallbacks used only when Launch.log / the RL binary cannot be read.
+# Last verified: RL build 23106173, updated 2026-05-12.
+_PSY_GAME_VER    = "260506.26700.517210"
 _PSY_FEATURE_SET = "PrimeUpdate58_1"
-_PSY_BUILD_ID    = "1273328361"
+_PSY_BUILD_ID    = "-1652286008"
 
-# Compiled patterns for binary scanning — module-level for reuse
-_RE_FEATURE_SET = re.compile(rb"PrimeUpdate\d+_\d+")
-_RE_BUILD_ID    = re.compile(rb"\b\d{9,11}\b")
+# Compiled patterns for Launch.log parsing
+_RE_LOG_FEATURE_SET = re.compile(r"Using feature set (\S+)")
+_RE_LOG_BUILD_ID    = re.compile(r"BuildID:\s*(-?\d+)")
+_RE_LOG_GAME_VER    = re.compile(r"GPsyonixBuildID\s+(\d+\.\d+\.\d+)")
 
 
 def get_auth_url() -> str:
@@ -72,78 +74,131 @@ def get_auth_url() -> str:
     return f"https://www.epicgames.com/id/login?redirectUrl={quote(redirect)}"
 
 
-def detect_rl_versions(rl_install_path: str) -> bool:
-    """Scan the installed RL binary and update PsyNet version constants in-place.
+def _find_rl_launch_log() -> "Path | None":
+    """Return the path to Rocket League's Launch.log, or None if not found.
 
-    The RL executable embeds the PsyNet FeatureSet string (e.g. "PrimeUpdate65_1")
-    and a numeric BuildID as plain ASCII.  After each Rocket League patch these
-    values change; scanning the binary at startup keeps the app compatible without
-    needing a new release.
-
-    Updates the module-level ``_PSY_FEATURE_SET`` and ``_PSY_BUILD_ID`` globals.
-    Returns True if the binary was read successfully (values may or may not have
-    changed), False if the binary was missing or the scan failed.
+    The log is in ``{Documents}\\My Games\\Rocket League\\TAGame\\Logs\\Launch.log``.
+    Documents may be redirected to OneDrive, so we use the Windows Shell API to
+    resolve the real path instead of assuming ``~\\Documents``.
     """
-    global _PSY_FEATURE_SET, _PSY_BUILD_ID
-
     try:
-        bin_path = (
-            Path(rl_install_path) / "Binaries" / "Win64" / "RocketLeague.exe"
-        )
-        if not bin_path.exists():
+        import ctypes, ctypes.wintypes
+        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+        # CSIDL_PERSONAL = 5  →  "My Documents"
+        ctypes.windll.shell32.SHGetFolderPathW(0, 5, 0, 0, buf)
+        docs = Path(buf.value)
+    except Exception:
+        docs = Path.home() / "Documents"
+
+    log = docs / "My Games" / "Rocket League" / "TAGame" / "Logs" / "Launch.log"
+    return log if log.exists() else None
+
+
+def detect_rl_versions(rl_install_path: str) -> bool:
+    """Read RL's Launch.log (and fall back to binary scan) to update PsyNet constants.
+
+    Rocket League writes the current FeatureSet and BuildID to Launch.log on every
+    startup.  Parsing that file is far more reliable than binary scanning because the
+    PsyNet SDK strings are obfuscated in recent RL builds.
+
+    Updates ``_PSY_FEATURE_SET``, ``_PSY_BUILD_ID``, and ``_PSY_GAME_VER`` globals.
+    Returns True when at least one value was successfully read.
+    """
+    global _PSY_FEATURE_SET, _PSY_BUILD_ID, _PSY_GAME_VER
+
+    # ── Method 1: Parse Launch.log (most reliable) ─────────────────────────
+    log_path = _find_rl_launch_log()
+    if log_path:
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            new_fs  = (m := _RE_LOG_FEATURE_SET.search(text)) and m.group(1)
+            new_bid = (m := _RE_LOG_BUILD_ID.search(text))    and m.group(1)
+            new_ver = (m := _RE_LOG_GAME_VER.search(text))    and m.group(1)
+
+            changed = False
+            if new_fs and new_fs != _PSY_FEATURE_SET:
+                logger.info("PsyNet FeatureSet: %s → %s", _PSY_FEATURE_SET, new_fs)
+                _PSY_FEATURE_SET = new_fs
+                changed = True
+            if new_bid and new_bid != _PSY_BUILD_ID:
+                logger.info("PsyNet BuildID: %s → %s", _PSY_BUILD_ID, new_bid)
+                _PSY_BUILD_ID = new_bid
+                changed = True
+            if new_ver and new_ver != _PSY_GAME_VER:
+                logger.info("PsyNet GameVer: %s → %s", _PSY_GAME_VER, new_ver)
+                _PSY_GAME_VER = new_ver
+                changed = True
+
+            if new_fs or new_bid or new_ver:
+                level = logging.INFO if changed else logging.DEBUG
+                logger.log(
+                    level,
+                    "PsyNet constants from Launch.log (FeatureSet=%s, BuildID=%s, GameVer=%s)",
+                    _PSY_FEATURE_SET, _PSY_BUILD_ID, _PSY_GAME_VER,
+                )
+                return True
+            logger.warning("detect_rl_versions: Launch.log found but no PsyNet fields parsed")
+        except Exception as exc:
+            logger.warning("detect_rl_versions: failed to read Launch.log — %s", exc)
+
+    # ── Method 2: Binary scan (fallback — only recovers FeatureSet) ─────────
+    # PsyNet SDK strings are UTF-16 in recent RL builds; BuildID is obfuscated.
+    try:
+        # Accept both the root install dir and the TAGame subdir in config
+        candidates = [Path(rl_install_path)]
+        if Path(rl_install_path).name.lower() == "tagame":
+            candidates.append(Path(rl_install_path).parent)
+        candidates.append(Path(rl_install_path).parent)  # always try parent too
+
+        bin_path = None
+        for base in candidates:
+            p = base / "Binaries" / "Win64" / "RocketLeague.exe"
+            if p.exists():
+                bin_path = p
+                break
+
+        if bin_path is None:
             logger.warning(
-                "detect_rl_versions: RL binary not found at %s — using built-in fallbacks",
-                bin_path,
+                "detect_rl_versions: RL binary not found near %s — using built-in fallbacks",
+                rl_install_path,
             )
             return False
 
+        needle_utf16 = "PrimeUpdate".encode("utf-16-le")
+        pat_utf16    = re.compile(rb"(?:PrimeUpdate\d+(?:_\d+)?)")
+
         with open(bin_path, "rb") as f:
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                fs_match = _RE_FEATURE_SET.search(mm)
-                if not fs_match:
-                    logger.warning(
-                        "detect_rl_versions: PrimeUpdate pattern not found in RL binary "
-                        "— using built-in fallbacks"
-                    )
-                    return False
+                data = bytes(mm)
 
-                new_fs = fs_match.group().decode("ascii")
-
-                # Search for BuildID (9–11 digit number) in a 4 KB window around
-                # the FeatureSet string — the two constants are typically nearby.
-                win_start = max(0, fs_match.start() - 4096)
-                win_end   = min(len(mm), fs_match.end() + 4096)
-                window    = bytes(mm[win_start:win_end])
-
-        new_bid = _PSY_BUILD_ID  # keep existing value if nothing plausible found
-        for m in _RE_BUILD_ID.finditer(window):
-            candidate = m.group().decode("ascii")
-            # Reject trivially bad values: all-same-digit or leading zeros
-            if len(set(candidate)) > 1 and candidate[0] != "0":
-                new_bid = candidate
+        # Collect all UTF-16 PrimeUpdate strings, take the last one (highest version)
+        pos, last_fs = 0, None
+        while True:
+            idx = data.find(needle_utf16, pos)
+            if idx < 0:
                 break
+            end = idx
+            while end + 1 < len(data) and (data[end] != 0 or data[end + 1] != 0):
+                end += 2
+            s = data[idx:end].decode("utf-16-le", errors="replace")
+            if re.match(r"PrimeUpdate\d+", s):
+                last_fs = s
+            pos = idx + 2
 
-        changed = False
-        if new_fs != _PSY_FEATURE_SET:
-            logger.info("PsyNet FeatureSet updated: %s → %s", _PSY_FEATURE_SET, new_fs)
-            _PSY_FEATURE_SET = new_fs
-            changed = True
-        if new_bid != _PSY_BUILD_ID:
-            logger.info("PsyNet BuildID updated: %s → %s", _PSY_BUILD_ID, new_bid)
-            _PSY_BUILD_ID = new_bid
-            changed = True
-
-        if changed:
+        if last_fs and last_fs != _PSY_FEATURE_SET:
+            logger.info("PsyNet FeatureSet (binary): %s → %s", _PSY_FEATURE_SET, last_fs)
+            _PSY_FEATURE_SET = last_fs
             logger.info(
-                "PsyNet constants updated from RL binary (FeatureSet=%s, BuildID=%s)",
+                "PsyNet constants partially updated from binary (FeatureSet=%s, BuildID unchanged=%s)",
                 _PSY_FEATURE_SET, _PSY_BUILD_ID,
             )
+            return True
+        elif last_fs:
+            logger.debug("PsyNet FeatureSet confirmed from binary: %s", last_fs)
+            return True
         else:
-            logger.debug(
-                "PsyNet constants verified from RL binary (FeatureSet=%s, BuildID=%s)",
-                _PSY_FEATURE_SET, _PSY_BUILD_ID,
-            )
-        return True
+            logger.warning("detect_rl_versions: no FeatureSet found in binary")
+            return False
 
     except Exception as exc:
         logger.warning("detect_rl_versions: binary scan failed — %s", exc)
