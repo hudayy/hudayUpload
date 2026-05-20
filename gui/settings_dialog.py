@@ -187,17 +187,42 @@ class SettingsDialog(tk.Toplevel):
     # ── tab: Epic Games ───────────────────────────────────────────────────────
 
     def _build_epic(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
 
-        self._epic_status_lbl = ttk.Label(parent, text="Not connected", foreground="#9E9E9E")
-        self._epic_status_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(parent, text="Connected accounts:").grid(
+            row=0, column=0, sticky="w", pady=(0, 4)
+        )
 
-        ttk.Button(parent, text="Connect Epic Account", command=self._connect_epic).grid(
-            row=1, column=0, sticky="w"
+        list_frame = ttk.Frame(parent)
+        list_frame.grid(row=1, column=0, sticky="ew")
+        list_frame.columnconfigure(0, weight=1)
+
+        self._epic_list = tk.Listbox(
+            list_frame,
+            height=4,
+            selectmode=tk.SINGLE,
+            activestyle="none",
+            relief="sunken",
+            borderwidth=1,
+            background="#1E1E1E",
+            foreground="#CCCCCC",
+            selectbackground="#42A5F5",
+            selectforeground="#FFFFFF",
+            font=("Segoe UI", 9),
         )
-        ttk.Button(parent, text="Disconnect", command=self._disconnect_epic).grid(
-            row=1, column=1, sticky="w", padx=(6, 0)
+        self._epic_list.grid(row=0, column=0, sticky="ew")
+
+        btn_row = ttk.Frame(parent)
+        btn_row.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(btn_row, text="Add Account", command=self._connect_epic).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="Remove Selected", command=self._remove_epic_account).pack(
+            side=tk.LEFT, padx=(8, 0)
         )
+
+        self._epic_status_lbl = ttk.Label(
+            parent, text="", foreground="#9E9E9E", wraplength=380
+        )
+        self._epic_status_lbl.grid(row=3, column=0, sticky="w", pady=(10, 0))
 
     # ── tab: Rocket League ────────────────────────────────────────────────────
 
@@ -409,54 +434,97 @@ class SettingsDialog(tk.Toplevel):
             )
 
     def _refresh_epic_status(self) -> None:
+        if not hasattr(self, "_epic_list"):
+            return
+        self._epic_list.delete(0, tk.END)
         accounts = self.cfg.get_epic_accounts()
         if accounts:
-            name = accounts[0].get("display_name", "").strip()
-            if name:
-                self._epic_status_lbl.config(text=f"Connected as {name}", foreground="#4CAF50")
-            else:
-                self._epic_status_lbl.config(text="Connected (display name unknown)", foreground="#4CAF50")
+            for acc in accounts:
+                name = acc.get("display_name", "").strip() or acc.get("account_id", "Unknown")
+                self._epic_list.insert(tk.END, f"  {name}")
+            n = len(accounts)
+            self._epic_status_lbl.config(
+                text=f"{n} account{'s' if n != 1 else ''} connected.",
+                foreground="#4CAF50",
+            )
         else:
-            self._epic_status_lbl.config(text="Not connected", foreground="#9E9E9E")
+            self._epic_status_lbl.config(
+                text="No accounts connected. Click 'Add Account' to log in.",
+                foreground="#9E9E9E",
+            )
 
-    def _disconnect_epic(self) -> None:
-        self.cfg._data["epic_accounts"] = []
-        self.cfg.save()
-        self._refresh_epic_status()
-        self.app._refresh_epic_status_ui()
+    def _remove_epic_account(self) -> None:
+        sel = self._epic_list.curselection()
+        if not sel:
+            self._epic_status_lbl.config(
+                text="Select an account in the list first.", foreground="#FF9800"
+            )
+            return
+        idx = sel[0]
+        accounts = self.cfg.get_epic_accounts()
+        if idx < len(accounts):
+            self.cfg.remove_epic_account(accounts[idx].get("account_id", ""))
+            self._refresh_epic_status()
+            self.app._refresh_epic_status_ui()
 
     def _connect_epic(self) -> None:
-        from core.epic_auth import EpicClient, EpicAuthError
-
-        client = EpicClient()
-        client.open_auth_browser()
+        """Open the device-auth dialog and add a new Epic account."""
+        from core.epic_auth import EpicAuthError, start_device_auth, poll_device_auth_once
 
         dlg = tk.Toplevel(self)
-        dlg.title("Connect Epic Account")
+        dlg.title("Add Epic Account")
         dlg.resizable(False, False)
         dlg.grab_set()
         dlg.transient(self)
 
+        # ── header ────────────────────────────────────────────────────────────
+        ttk.Label(
+            dlg,
+            text="Connect your Epic Games account",
+            font=("Segoe UI", 10, "bold"),
+            padding=(16, 14, 16, 2),
+        ).pack(fill=tk.X)
+
         ttk.Label(
             dlg,
             text=(
-                "A page opened in your browser.\n\n"
-                "Log in, then copy the Authorization Code shown on the page —\n"
-                "this window will close automatically."
+                "A browser window will open. Log in with your Epic account\n"
+                "and approve the request — this window closes automatically."
             ),
             justify="left",
-            wraplength=320,
-            padding=(14, 12, 14, 4),
+            wraplength=340,
+            foreground="#9E9E9E",
+            padding=(16, 0, 16, 8),
         ).pack(fill=tk.X)
 
+        # Code display (shown once device_code arrives)
+        code_frame = ttk.Frame(dlg, padding=(16, 0, 16, 4))
+        code_frame.pack(fill=tk.X)
+        ttk.Label(code_frame, text="Your code:", foreground="#9E9E9E").pack(side=tk.LEFT)
+        self._device_code_var = tk.StringVar(value="…")
+        ttk.Label(
+            code_frame,
+            textvariable=self._device_code_var,
+            font=("Consolas", 14, "bold"),
+            foreground="#42A5F5",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         status_lbl = ttk.Label(
-            dlg, text="Watching clipboard for code…", foreground="#9E9E9E",
-            padding=(14, 0, 14, 8),
+            dlg,
+            text="Starting authorization…",
+            foreground="#9E9E9E",
+            padding=(16, 0, 16, 10),
+            wraplength=340,
         )
         status_lbl.pack(fill=tk.X)
 
-        btn_frame = ttk.Frame(dlg)
-        btn_frame.pack(fill=tk.X, padx=14, pady=(0, 10))
+        btn_frame = ttk.Frame(dlg, padding=(16, 0, 16, 14))
+        btn_frame.pack(fill=tk.X)
+        open_btn = ttk.Button(
+            btn_frame, text="Open Browser Again", state="disabled",
+            command=lambda: None,  # updated once we have the URL
+        )
+        open_btn.pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Cancel", command=dlg.destroy, width=10).pack(side=tk.RIGHT)
 
         dlg.update_idletasks()
@@ -466,75 +534,94 @@ class SettingsDialog(tk.Toplevel):
         dlg.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
 
         _cancelled = [False]
-        _seen_clips: set = set()
-
-        def _try_code(code: str) -> None:
-            code = code.strip()
-            if not code or code in _seen_clips:
-                return
-            _seen_clips.add(code)
-            dlg.after(0, lambda: status_lbl.config(text="Code detected — connecting…", foreground="#9E9E9E"))
-
-            def _do():
-                try:
-                    data = client.login_with_code(code)
-                    def _ok():
-                        # Single-account mode: replace any existing account
-                        self.cfg._data["epic_accounts"] = [{
-                            "refresh_token": data["refresh_token"],
-                            "account_id":    data["account_id"],
-                            "display_name":  data["display_name"],
-                        }]
-                        self.cfg.save()
-                        self._refresh_epic_status()
-                        self.app._refresh_epic_status_ui()
-                        dlg.destroy()
-                    dlg.after(0, _ok)
-                except EpicAuthError as exc:
-                    _seen_clips.discard(code)
-                    msg = str(exc)
-                    dlg.after(0, lambda m=msg: status_lbl.config(text=f"❌ {m}", foreground="#EF5350"))
-                except Exception as exc:
-                    _seen_clips.discard(code)
-                    msg = str(exc)
-                    dlg.after(0, lambda m=msg: status_lbl.config(text=f"❌ Unexpected error: {m}", foreground="#EF5350"))
-
-            threading.Thread(target=_do, daemon=True).start()
-
-        def _extract_code(clip: str) -> str:
-            clip = clip.strip()
-            if not clip:
-                return ""
-            if clip.startswith("{"):
-                try:
-                    import json as _json
-                    obj = _json.loads(clip)
-                    code = obj.get("authorizationCode") or obj.get("code") or ""
-                    return code.strip()
-                except Exception:
-                    return ""
-            if len(clip) <= 64 and clip.replace("-", "").isalnum():
-                return clip
-            return ""
-
-        def _poll_clipboard():
-            if _cancelled[0] or not dlg.winfo_exists():
-                return
-            try:
-                clip = dlg.clipboard_get()
-                code = _extract_code(clip)
-                if code:
-                    _try_code(code)
-            except Exception:
-                pass
-            dlg.after(500, _poll_clipboard)
 
         def _on_close():
             _cancelled[0] = True
             dlg.destroy()
 
         dlg.protocol("WM_DELETE_WINDOW", _on_close)
-        dlg.after(500, _poll_clipboard)
+
+        # ── background thread ─────────────────────────────────────────────────
+        def _do() -> None:
+            # 1. Start device auth
+            try:
+                device = start_device_auth()
+            except Exception as exc:
+                msg = str(exc)
+                dlg.after(0, lambda m=msg: status_lbl.config(
+                    text=f"❌ Failed to start: {m}", foreground="#EF5350"
+                ))
+                return
+
+            verify_url  = device["verification_uri"]
+            user_code   = device["user_code"]
+            interval    = max(device.get("interval", 5.0), 3.0)
+            expires_at  = time.time() + device.get("expires_in", 600)
+
+            # 2. Update UI and open browser
+            def _show_code() -> None:
+                if not dlg.winfo_exists():
+                    return
+                self._device_code_var.set(user_code)
+                open_btn.config(
+                    state="normal",
+                    command=lambda: webbrowser.open(verify_url),
+                )
+                status_lbl.config(
+                    text="Waiting for you to approve in your browser…",
+                    foreground="#9E9E9E",
+                )
+                webbrowser.open(verify_url)
+
+            dlg.after(0, _show_code)
+
+            # 3. Poll until approved, expired, or cancelled
+            while time.time() < expires_at:
+                if _cancelled[0] or not dlg.winfo_exists():
+                    return
+                time.sleep(interval)
+                if _cancelled[0] or not dlg.winfo_exists():
+                    return
+                try:
+                    result = poll_device_auth_once(device["device_code"])
+                except EpicAuthError as exc:
+                    msg = str(exc)
+                    dlg.after(0, lambda m=msg: status_lbl.config(
+                        text=f"❌ {m}", foreground="#EF5350"
+                    ))
+                    return
+                except Exception as exc:
+                    # Transient network error — keep trying
+                    logger.warning("Device auth poll error: %s", exc)
+                    continue
+
+                if result is None:
+                    continue  # still pending
+
+                # Success — save account and close dialog
+                def _ok(r=result) -> None:
+                    if not dlg.winfo_exists():
+                        return
+                    self.cfg.add_epic_account({
+                        "refresh_token":     "",          # no EGS token in device auth
+                        "eos_refresh_token": r["eos_refresh_token"],
+                        "account_id":        r["account_id"],
+                        "display_name":      r["display_name"],
+                    })
+                    self._refresh_epic_status()
+                    self.app._refresh_epic_status_ui()
+                    dlg.destroy()
+
+                dlg.after(0, _ok)
+                return
+
+            # Timed out
+            dlg.after(0, lambda: status_lbl.config(
+                text="❌ Authorization timed out. Close this dialog and try again.",
+                foreground="#EF5350",
+            ))
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _check_for_updates(self) -> None:
         self._update_btn.config(state="disabled", text="Checking…")

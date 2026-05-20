@@ -145,11 +145,24 @@ class Config:
     def update_epic_account_token(
         self, account_id: str, refresh_token: str, display_name: str
     ) -> None:
-        """Update the refresh token (and display name) for a stored account."""
+        """Update the EGS refresh token (and display name) for a stored account."""
         for a in self._data.get("epic_accounts", []):
             if a.get("account_id") == account_id:
                 a["refresh_token"] = refresh_token
-                a["display_name"] = display_name
+                if display_name:
+                    a["display_name"] = display_name
+                break
+        self.save()
+
+    def update_epic_account_eos_token(
+        self, account_id: str, eos_refresh_token: str, display_name: str = ""
+    ) -> None:
+        """Update the EOS refresh token (device-auth flow) for a stored account."""
+        for a in self._data.get("epic_accounts", []):
+            if a.get("account_id") == account_id:
+                a["eos_refresh_token"] = eos_refresh_token
+                if display_name:
+                    a["display_name"] = display_name
                 break
         self.save()
 

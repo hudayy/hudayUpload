@@ -1,21 +1,24 @@
 """Epic Games Store / PsyNet authentication and match history retrieval.
 
-Auth flow:
+Auth flows
+----------
+New (device auth, RFC 8628):
+  1. start_device_auth() → {device_code, user_code, verification_uri, …}
+  2. User opens verification_uri in browser, logs in, approves the request.
+  3. poll_device_auth_once(device_code) is called repeatedly until success.
+  4. Returns {eos_access_token, eos_refresh_token, account_id, display_name}.
+  5. EOS token is refreshed directly with refresh_eos_token(eos_refresh_token).
+  6. EOS token → PsyNet AuthPlayer/v2 (HMAC-signed) → WebSocket URL + PsyToken.
+  7. WebSocket call GetMatchHistory v1 → replay download → upload to ballchasing.
+
+Legacy (browser code, kept for existing accounts):
   1. Browser opens Epic authorize URL (internal EGS client).
   2. User copies the authorization code shown on the page.
-  3. App exchanges code → EGS access_token.
+  3. App exchanges code → EGS access_token + refresh_token.
   4. App GETs exchange code, POSTs it to EOS → eos_access_token (RL deployment).
-  5. App POSTs AuthPlayer/v2 to PsyNet (HMAC-signed) → WebSocket URL + PsyToken.
-  6. App connects via WebSocket and calls GetMatchHistory v1.
-  7. App downloads ReplayUrl, uploads bytes to ballchasing.
+  5–7. Same PsyNet/WebSocket/upload chain.
 
-NOTE: The internal EGS client is required because only it has the
-`account:oauth:exchangeTokenCode CREATE` permission that bridges EGS → EOS.
-That client does not support redirect URIs, so a redirect-based flow cannot
-be used. The settings dialog compensates with clipboard monitoring so the
-user only needs to copy the code — no manual paste step required.
-
-Refresh tokens are saved to config so the user only logs in once.
+Tokens are saved to config so the user only authenticates once.
 """
 from __future__ import annotations
 
@@ -46,6 +49,9 @@ _EGS_USER_AGENT    = "UELauncher/11.0.1-14907503+++Portal+Release-Live Windows/1
 # ── EOS constants ──────────────────────────────────────────────────────────────
 _EOS_AUTH_HEADER   = "eHl6YTc4OTFwNUQ3czlSNkdtNm1vVEhXR2xvZXJwN0I6S25oMThkdTROVmxGcyszdVErWlBwRENWdG8wV1lmNHlYUDgrT2N3VnQxbw=="
 _EOS_DEPLOYMENT_ID = "da32ae9c12ae40e8a112c52e1f17f3ba"  # Rocket League
+_EOS_TOKEN_URL     = "https://api.epicgames.dev/epic/oauth/v2/token"
+_EOS_DEVICE_URL    = "https://api.epicgames.dev/epic/oauth/v2/deviceAuthorization"
+_EOS_USERINFO_URL  = "https://api.epicgames.dev/epic/oauth/v2/userInfo"
 
 # ── PsyNet constants ───────────────────────────────────────────────────────────
 _PSY_BASE_URL    = "https://api.rlpp.psynet.gg/rpc"
@@ -205,6 +211,107 @@ def detect_rl_versions(rl_install_path: str) -> bool:
         return False
 
 
+# ── Device Authorization Grant (RFC 8628 via EOS) ────────────────────────────
+
+def start_device_auth() -> dict:
+    """Begin the OAuth 2.0 Device Authorization Grant flow.
+
+    Returns a dict with:
+      device_code      – pass to poll_device_auth_once() in a loop
+      user_code        – 8-character code the user enters on the browser page
+      verification_uri – URL to open (verification_uri_complete when available,
+                         so the code is pre-filled and the user just logs in)
+      expires_in       – seconds until device_code expires
+      interval         – minimum seconds between poll_device_auth_once() calls
+
+    Raises EpicAuthError on network or server errors.
+    """
+    resp = requests.post(
+        _EOS_DEVICE_URL,
+        data={"client_id": "xyza7891p5D7s9R6Gm6moTHWGloerp7B"},
+        headers={
+            "Authorization":  f"Basic {_EOS_AUTH_HEADER}",
+            "Content-Type":   "application/x-www-form-urlencoded",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise EpicAuthError(
+            f"Device auth start failed: HTTP {resp.status_code} — {resp.text[:200]}"
+        )
+    data = resp.json()
+    # verification_uri_complete has the user_code pre-filled — best for same-device use
+    return {
+        "device_code":     data["device_code"],
+        "user_code":       data.get("user_code", ""),
+        "verification_uri": (
+            data.get("verification_uri_complete") or data.get("verification_uri", "")
+        ),
+        "expires_in":      int(data.get("expires_in", 600)),
+        "interval":        float(data.get("interval", 5)),
+    }
+
+
+def poll_device_auth_once(device_code: str) -> "dict | None":
+    """Poll the EOS token endpoint once for device auth completion.
+
+    Returns:
+      - dict {eos_access_token, eos_refresh_token, account_id, display_name}
+        when the user has approved in their browser.
+      - None when still pending or when the server says to slow down
+        (caller should wait `interval` seconds and retry).
+
+    Raises EpicAuthError on authorization_denied or any other terminal error.
+    """
+    resp = requests.post(
+        _EOS_TOKEN_URL,
+        data={
+            "grant_type":    "device_code",
+            "device_code":   device_code,
+            "deployment_id": _EOS_DEPLOYMENT_ID,
+            "scope":         "basic_profile",
+        },
+        headers={
+            "Authorization":  f"Basic {_EOS_AUTH_HEADER}",
+            "Content-Type":   "application/x-www-form-urlencoded",
+        },
+        timeout=30,
+    )
+    data = resp.json()
+    if resp.status_code == 200:
+        access_token  = data["access_token"]
+        refresh_token = data.get("refresh_token", "")
+        account_id    = data.get("account_id", "")
+        display_name  = _fetch_eos_display_name(access_token) or account_id
+        return {
+            "eos_access_token":  access_token,
+            "eos_refresh_token": refresh_token,
+            "account_id":        account_id,
+            "display_name":      display_name,
+        }
+    error_code = data.get("errorCode", "")
+    if "authorization_pending" in error_code or "slow_down" in error_code:
+        return None  # still waiting — caller retries
+    msg = data.get("errorMessage") or data.get("error_description") or resp.text[:200]
+    raise EpicAuthError(f"Device authorization failed: {msg}")
+
+
+def _fetch_eos_display_name(eos_access_token: str) -> str:
+    """GET /epic/oauth/v2/userInfo → preferred_username, or '' on any failure."""
+    try:
+        resp = requests.get(
+            _EOS_USERINFO_URL,
+            headers={"Authorization": f"Bearer {eos_access_token}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            d = resp.json()
+            return d.get("preferred_username") or d.get("name") or ""
+    except Exception:
+        pass
+    return ""
+
+
 class EpicAuthError(Exception):
     pass
 
@@ -234,12 +341,47 @@ class EpicClient:
         })
 
     def refresh_login(self, refresh_token: str) -> dict:
-        """Get a fresh access token using a stored refresh token (same return shape)."""
+        """Get a fresh EGS access token using a stored EGS refresh token (same return shape)."""
         return self._egs_token({
             "grant_type":    "refresh_token",
             "refresh_token": refresh_token,
             "token_type":    "eg1",
         })
+
+    def refresh_eos_token(self, eos_refresh_token: str) -> dict:
+        """Refresh an EOS refresh token obtained via the device auth flow.
+
+        Returns {eos_access_token, eos_refresh_token, account_id, display_name}.
+        The new eos_refresh_token should be saved back to config.
+        Raises EpicAuthError when the token has expired (user must re-authenticate).
+        """
+        resp = self._http.post(
+            _EOS_TOKEN_URL,
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": eos_refresh_token,
+                "deployment_id": _EOS_DEPLOYMENT_ID,
+                "scope":         "basic_profile",
+            },
+            headers={
+                "Authorization":  f"Basic {_EOS_AUTH_HEADER}",
+                "Content-Type":   "application/x-www-form-urlencoded",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            data = resp.json()
+            msg = data.get("errorMessage") or data.get("error_description") or resp.text[:200]
+            raise EpicAuthError(f"EOS token refresh failed: {msg}")
+        data = resp.json()
+        access_token = data["access_token"]
+        return {
+            "eos_access_token":  access_token,
+            # Server may rotate the refresh token; fall back to the old one if not
+            "eos_refresh_token": data.get("refresh_token") or eos_refresh_token,
+            "account_id":        data.get("account_id", ""),
+            "display_name":      _fetch_eos_display_name(access_token),
+        }
 
     def get_unuploaded_matches(
         self,
@@ -249,35 +391,60 @@ class EpicClient:
         uploaded_guids: set,
         max_count: int = 5,
     ) -> list[dict]:
-        """Full chain: EOS token → PsyNet → GetMatchHistory → up to max_count unuploaded entries.
+        """Legacy EGS flow: exchange code → EOS token → PsyNet → match history.
 
-        Returns a list of {'match_guid': str, 'replay_url': str}, oldest-first so
-        they are uploaded in chronological order.
+        Returns a list of match dicts (oldest-first), up to max_count entries.
         Raises EpicAuthError on any auth/network failure.
         """
         exchange_code          = self._get_exchange_code(access_token)
         eos_token, eos_acct_id = self._get_eos_token(exchange_code)
         ws_url, psy_token, sid = self._psynet_auth(eos_token, eos_acct_id, display_name)
         matches                = self._get_match_history(ws_url, psy_token, sid, eos_acct_id)
+        return self._collect_unuploaded(matches, uploaded_guids, max_count, display_name)
 
+    def get_unuploaded_matches_from_eos(
+        self,
+        eos_access_token: str,
+        account_id: str,
+        display_name: str,
+        uploaded_guids: set,
+        max_count: int = 5,
+    ) -> list[dict]:
+        """Device-auth flow: EOS token → PsyNet → match history (no EGS exchange needed).
+
+        Returns a list of match dicts (oldest-first), up to max_count entries.
+        Raises EpicAuthError on any auth/network failure.
+        """
+        ws_url, psy_token, sid = self._psynet_auth(eos_access_token, account_id, display_name)
+        matches                = self._get_match_history(ws_url, psy_token, sid, account_id)
+        return self._collect_unuploaded(matches, uploaded_guids, max_count, display_name)
+
+    def _collect_unuploaded(
+        self,
+        matches: list,
+        uploaded_guids: set,
+        max_count: int,
+        display_name: str = "",
+    ) -> list[dict]:
+        """Filter a PsyNet match list to unuploaded entries, returning oldest-first."""
         found = []
         for entry in matches:
             match = entry.get("Match", {})
             guid  = match.get("MatchGUID", "")
             url   = entry.get("ReplayUrl", "")
             if guid and url and guid not in uploaded_guids:
-                # Log the raw entry structure so field names can be verified in exported logs
+                # Log the raw entry so field names can be verified in exported logs
                 logger.info("Raw PsyNet match entry for %s: %s", guid, entry)
                 found.append({
                     "match_guid":     guid,
                     "replay_url":     url,
+                    "display_name":   display_name,
                     # Extra fields for building a human-readable title.
-                    # Field names verified against raw entry dump in logs.
                     "match_time":     match.get("Created", ""),
                     "playlist_id":    match.get("Playlist", 0),
                     "player_team_id": entry.get("PlayerTeamID", -1),
                     "teams":          match.get("Teams", []),
-                    # Keep the full raw entry so app.py can fish out any field
+                    # Keep full raw entry so app.py can read any field
                     "_raw_entry":     entry,
                 })
                 if len(found) >= max_count:
@@ -288,8 +455,7 @@ class EpicClient:
         else:
             logger.info("No new unuploaded matches found in history (%d total)", len(matches))
 
-        # Reverse so we upload oldest first
-        return list(reversed(found))
+        return list(reversed(found))  # oldest first
 
     def download_replay(self, url: str) -> bytes:
         """Download replay bytes from the given URL."""

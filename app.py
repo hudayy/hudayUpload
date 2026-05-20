@@ -89,7 +89,7 @@ class Application:
     # ── public API (called by GUI) ────────────────────────────────────────────
 
     def trigger_manual_upload(self) -> None:
-        """Immediately fetch latest unuploaded match from Epic and upload."""
+        """Immediately fetch latest unuploaded matches from Epic (all accounts) and upload."""
         if not self.config.has_epic_auth:
             self.root.after(0, self._win.set_statusbar,
                             "Not logged in to Epic — open ⚙ Settings to connect.")
@@ -174,18 +174,18 @@ class Application:
 
     def _refresh_epic_status_ui(self) -> None:
         accounts = self.config.get_epic_accounts()
-        if accounts:
+        if not accounts:
+            self.root.after(0, self._win.set_epic_status, False,
+                            "Not connected — open ⚙ Settings")
+        elif len(accounts) == 1:
             name = accounts[0].get("display_name", "").strip()
             self.root.after(0, self._win.set_epic_status, True,
                             f"Connected as {name}" if name else "Connected")
         else:
-            self.root.after(0, self._win.set_epic_status, False,
-                            "Not connected — open ⚙ Settings")
-
-    def _get_active_epic_account(self) -> "dict | None":
-        """Return the single configured Epic account, or None if not connected."""
-        accounts = self.config.get_epic_accounts()
-        return accounts[0] if accounts else None
+            names = [a.get("display_name", "").strip() or a.get("account_id", "?")
+                     for a in accounts]
+            self.root.after(0, self._win.set_epic_status, True,
+                            f"Connected: {', '.join(names)}")
 
     # ── event pump ───────────────────────────────────────────────────────────
 
@@ -274,7 +274,7 @@ class Application:
     # ── Epic upload ───────────────────────────────────────────────────────────
 
     def _run_epic_upload(self, delay: float) -> None:
-        """Wait `delay` seconds, then fetch + download + upload via Epic API."""
+        """Wait `delay` seconds, then fetch + download + upload for ALL Epic accounts."""
         if delay > 0:
             logger.info("Waiting %.0f seconds before fetching replay…", delay)
             time.sleep(delay)
@@ -286,83 +286,146 @@ class Application:
                                 "No Ballchasing token — open ⚙ Settings.")
                 return
 
-            account = self._get_active_epic_account()
-            if account is None:
-                logger.warning("Upload skipped — no Epic auth token")
+            accounts = self.config.get_epic_accounts()
+            if not accounts:
+                logger.warning("Upload skipped — no Epic accounts configured")
                 self.root.after(0, self._win.set_statusbar,
                                 "Not logged in to Epic — open ⚙ Settings to connect.")
                 return
 
-            self.root.after(0, self._win.set_statusbar, "Fetching match from Epic API…")
+            self.root.after(0, self._win.set_statusbar, "Fetching matches from Epic API…")
 
-            # Refresh EGS access token for the active account
-            acc_label = account.get("display_name") or account.get("account_id", "")
-            logger.info("Refreshing Epic Games access token for %s", acc_label)
-            try:
-                token_data = self._epic.refresh_login(account["refresh_token"])
-                logger.info("Epic token refreshed — account: %s",
-                            token_data.get("display_name") or token_data.get("account_id"))
-            except EpicAuthError as exc:
-                logger.error("Epic token refresh failed: %s", exc)
-                self.root.after(0, self._win.set_statusbar,
-                                f"Epic login expired — re-authenticate in Settings. ({exc})")
-                return
-            except Exception as exc:
-                logger.error("Network error refreshing Epic token: %s", exc)
-                self.root.after(0, self._win.set_statusbar,
-                                f"Network error — will retry next game: {exc}")
-                return
-
-            # Persist the refreshed token back to this account's slot
-            self.config.update_epic_account_token(
-                account["account_id"],
-                token_data["refresh_token"],
-                token_data.get("display_name") or account.get("display_name", ""),
-            )
-            display_name: str = token_data.get("display_name") or account.get("display_name", "")
-
-            # Fetch latest unuploaded matches for this account
             batch_size = int(getattr(self.config, "upload_batch_size", 5))
-            logger.info("Fetching match history from PsyNet for account %s (batch=%d)",
-                        token_data["account_id"], batch_size)
-            try:
-                entries = self._epic.get_unuploaded_matches(
-                    access_token  = token_data["access_token"],
-                    account_id    = token_data["account_id"],
-                    display_name  = display_name,
-                    uploaded_guids= self._uploaded_guids,
-                    max_count     = batch_size,
-                )
-            except EpicAuthError as exc:
-                logger.error("PsyNet match history request failed: %s", exc)
-                self.root.after(0, self._win.set_statusbar,
-                                f"Epic API error: {exc}")
-                return
-            except Exception as exc:
-                logger.error("Network error fetching match history: %s", exc)
-                self.root.after(0, self._win.set_statusbar,
-                                f"Network error — will retry next game: {exc}")
-                return
+            all_entries: list[dict] = []
 
-            if not entries:
-                logger.info("No new unuploaded matches found in history")
+            # ── Collect unuploaded matches from every account ──────────────
+            for account in accounts:
+                acc_label = account.get("display_name") or account.get("account_id", "?")
+                eos_rt    = account.get("eos_refresh_token", "")
+                egs_rt    = account.get("refresh_token", "")
+
+                if eos_rt:
+                    # ── Device-auth path: refresh EOS token directly ───────
+                    logger.info("Refreshing EOS token for %s", acc_label)
+                    try:
+                        eos_data = self._epic.refresh_eos_token(eos_rt)
+                    except EpicAuthError as exc:
+                        logger.error("EOS token refresh failed for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Epic session expired for {acc_label} — "
+                                        f"re-add account in Settings. ({exc})")
+                        continue
+                    except Exception as exc:
+                        logger.error("Network error refreshing EOS token for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        continue
+
+                    self.config.update_epic_account_eos_token(
+                        account["account_id"],
+                        eos_data["eos_refresh_token"],
+                        eos_data.get("display_name") or acc_label,
+                    )
+                    display_name = eos_data.get("display_name") or acc_label
+
+                    logger.info("Fetching PsyNet history for %s (EOS path, batch=%d)",
+                                acc_label, batch_size)
+                    try:
+                        entries = self._epic.get_unuploaded_matches_from_eos(
+                            eos_access_token = eos_data["eos_access_token"],
+                            account_id       = eos_data["account_id"],
+                            display_name     = display_name,
+                            uploaded_guids   = self._uploaded_guids,
+                            max_count        = batch_size,
+                        )
+                    except EpicAuthError as exc:
+                        logger.error("PsyNet history failed for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Epic API error ({acc_label}): {exc}")
+                        continue
+                    except Exception as exc:
+                        logger.error("Network error fetching history for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        continue
+
+                    all_entries.extend(entries)
+
+                elif egs_rt:
+                    # ── Legacy path: refresh EGS token → EOS exchange ──────
+                    logger.info("Refreshing EGS token for %s", acc_label)
+                    try:
+                        token_data = self._epic.refresh_login(egs_rt)
+                        logger.info("EGS token refreshed — %s",
+                                    token_data.get("display_name") or token_data.get("account_id"))
+                    except EpicAuthError as exc:
+                        logger.error("EGS token refresh failed for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Epic login expired for {acc_label} — "
+                                        f"re-authenticate in Settings. ({exc})")
+                        continue
+                    except Exception as exc:
+                        logger.error("Network error refreshing EGS token for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        continue
+
+                    self.config.update_epic_account_token(
+                        account["account_id"],
+                        token_data["refresh_token"],
+                        token_data.get("display_name") or acc_label,
+                    )
+                    display_name = token_data.get("display_name") or acc_label
+
+                    logger.info("Fetching PsyNet history for %s (EGS path, batch=%d)",
+                                acc_label, batch_size)
+                    try:
+                        entries = self._epic.get_unuploaded_matches(
+                            access_token   = token_data["access_token"],
+                            account_id     = token_data["account_id"],
+                            display_name   = display_name,
+                            uploaded_guids = self._uploaded_guids,
+                            max_count      = batch_size,
+                        )
+                    except EpicAuthError as exc:
+                        logger.error("PsyNet history failed for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Epic API error ({acc_label}): {exc}")
+                        continue
+                    except Exception as exc:
+                        logger.error("Network error fetching history for %s: %s", acc_label, exc)
+                        self.root.after(0, self._win.set_statusbar,
+                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        continue
+
+                    all_entries.extend(entries)
+
+                else:
+                    logger.warning("Account %s has no refresh token — skipping", acc_label)
+                    continue
+
+            if not all_entries:
+                logger.info("No new unuploaded matches found across all accounts")
                 self.root.after(0, self._win.set_statusbar,
                                 "No new matches found in Epic history — try Upload Now later.")
                 return
 
+            # ── Upload all collected entries ───────────────────────────────
             client = BallchasingClient(
                 self.config.ballchasing_token,
                 self.config.ballchasing_visibility,
             )
 
-            for i, entry in enumerate(entries, 1):
-                guid       = entry["match_guid"]
-                replay_url = entry["replay_url"]
-                filename   = f"{guid}.replay"
+            for i, entry in enumerate(all_entries, 1):
+                guid         = entry["match_guid"]
+                replay_url   = entry["replay_url"]
+                # display_name is now stored per-entry by _collect_unuploaded
+                display_name = entry.get("display_name", "")
+                filename     = f"{guid}.replay"
 
                 self.root.after(0, self._win.set_statusbar,
-                                f"Downloading replay {i}/{len(entries)}: {filename}…")
-                logger.info("Downloading replay %s (%d/%d)", filename, i, len(entries))
+                                f"Downloading replay {i}/{len(all_entries)}: {filename}…")
+                logger.info("Downloading replay %s (%d/%d)", filename, i, len(all_entries))
                 try:
                     data = self._epic.download_replay(replay_url)
                     logger.info("Replay downloaded — %d bytes", len(data))
@@ -437,7 +500,7 @@ class Application:
                 logger.info("Uploading %s as %r (visibility=%s)",
                             filename, upload_name, self.config.ballchasing_visibility)
                 self.root.after(0, self._win.set_statusbar,
-                                f"Uploading {i}/{len(entries)}: {upload_name} to ballchasing…")
+                                f"Uploading {i}/{len(all_entries)}: {upload_name} to ballchasing…")
                 result = client.upload_bytes(upload_name, data)
 
                 if result.ok and not result.duplicate:
@@ -450,7 +513,7 @@ class Application:
                 # Optional Rocky upload
                 if getattr(self.config, "rocky_enabled", False):
                     self.root.after(0, self._win.set_statusbar,
-                                    f"Uploading {i}/{len(entries)}: {upload_name} to Rocky…")
+                                    f"Uploading {i}/{len(all_entries)}: {upload_name} to Rocky…")
                     rocky_result = RockyClient().upload_bytes(upload_name, data)
                     if rocky_result.ok and not rocky_result.duplicate:
                         logger.info("Rocky upload successful — %s", filename)
