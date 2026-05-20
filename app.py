@@ -698,15 +698,24 @@ class Application:
         threading.Thread(target=_check, daemon=True, name="manual-update-check").start()
 
     def apply_update(self, download_url: str) -> None:
-        """Download the new exe, swap it, and restart. Called from the GUI."""
+        """Download the new exe, swap it via batch script, then quit."""
         def _progress(msg: str) -> None:
             self.root.after(0, self._win.set_statusbar, msg)
 
         def _do():
             try:
                 download_and_install(download_url, progress_cb=_progress)
-                # Batch script is now running — quit so it can replace the exe
-                self.root.after(0, self.quit)
+                # Batch script is running in the background waiting for us to exit.
+                # Show a brief notice then quit so the swap can proceed.
+                def _finish():
+                    import tkinter.messagebox as _mb
+                    _mb.showinfo(
+                        "Update Ready",
+                        "The update has been downloaded.\n\n"
+                        "hudayUpload will now close — please reopen it to use the new version.",
+                    )
+                    self.quit()
+                self.root.after(0, _finish)
             except RuntimeError as exc:
                 logger.error("Update failed: %s", exc)
                 self.root.after(0, self._win.set_statusbar, f"Update failed: {exc}")
