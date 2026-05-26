@@ -258,14 +258,20 @@ class Application:
             self._win.set_rl_status(None, "Waiting for Rocket League…")
             # Revert Epic status back to account summary (stop showing "Playing as …")
             self._refresh_epic_status_ui()
-            if self.config.auto_upload and self._games_since_upload > 0:
-                logger.info("Rocket League closed — triggering upload for %d pending game(s)",
-                            self._games_since_upload)
-                self._win.set_statusbar(
-                    f"Rocket League closed — uploading {self._games_since_upload} game(s)…"
-                )
+            # Always upload on RL close — don't gate on _games_since_upload > 0.
+            # Stats API may have missed game-end events, or the counter may have
+            # been reset to 0 by an earlier periodic trigger that then failed.
+            if self.config.auto_upload:
+                count = self._games_since_upload
                 self._games_since_upload = 0
                 delay = float(getattr(self.config, "post_game_delay", _POST_GAME_DELAY_DEFAULT))
+                msg = (
+                    f"Rocket League closed — uploading {count} game(s)…"
+                    if count > 0
+                    else "Rocket League closed — checking for new replays…"
+                )
+                logger.info("Rocket League closed — triggering upload (pending=%d)", count)
+                self._win.set_statusbar(msg)
                 threading.Thread(
                     target=self._run_epic_upload,
                     args=(delay,),
@@ -329,7 +335,15 @@ class Application:
             logger.info("Waiting %.0f seconds before fetching replay…", delay)
             time.sleep(delay)
 
-        with self._uploading_lock:
+        # Non-blocking: skip rather than queue if an upload is already running.
+        # Queuing was the cause of "needs 6 presses" — all 6 threads ran
+        # sequentially and only the last one survived the PsyNet rate limit.
+        if not self._uploading_lock.acquire(blocking=False):
+            logger.info("Upload skipped — another upload is already in progress")
+            self.root.after(0, self._win.set_statusbar,
+                            "Upload already in progress — please wait…")
+            return
+        try:
             if not self.config.has_bc_token:
                 logger.warning("Upload skipped — no Ballchasing token configured")
                 self.root.after(0, self._win.set_statusbar,
@@ -345,7 +359,6 @@ class Application:
 
             self.root.after(0, self._win.set_statusbar, "Fetching matches from Epic API…")
 
-            batch_size = int(getattr(self.config, "upload_batch_size", 5))
             all_entries: list[dict] = []
 
             # ── Collect unuploaded matches from every account ──────────────
@@ -378,25 +391,41 @@ class Application:
                     )
                     display_name = eos_data.get("display_name") or acc_label
 
-                    logger.info("Fetching PsyNet history for %s (EOS path, batch=%d)",
-                                acc_label, batch_size)
-                    try:
-                        entries = self._epic.get_unuploaded_matches_from_eos(
-                            eos_access_token = eos_data["eos_access_token"],
-                            account_id       = eos_data["account_id"],
-                            display_name     = display_name,
-                            uploaded_guids   = self._uploaded_guids,
-                            max_count        = batch_size,
-                        )
-                    except EpicAuthError as exc:
-                        logger.error("PsyNet history failed for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Epic API error ({acc_label}): {exc}")
-                        continue
-                    except Exception as exc:
-                        logger.error("Network error fetching history for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                    logger.info("Fetching PsyNet history for %s (EOS path)", acc_label)
+                    entries = None
+                    _last_net_exc = None
+                    for _attempt in range(3):
+                        if _attempt > 0:
+                            _wait = (15, 45)[_attempt - 1]
+                            logger.warning(
+                                "Network error for %s — retrying in %ds (attempt %d/3)…",
+                                acc_label, _wait, _attempt + 1,
+                            )
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Network error ({acc_label}) — retrying in {_wait}s…")
+                            time.sleep(_wait)
+                        try:
+                            entries = self._epic.get_unuploaded_matches_from_eos(
+                                eos_access_token = eos_data["eos_access_token"],
+                                account_id       = eos_data["account_id"],
+                                display_name     = display_name,
+                                uploaded_guids   = self._uploaded_guids,
+                                max_count        = 20,
+                            )
+                            break
+                        except EpicAuthError as exc:
+                            logger.error("PsyNet history failed for %s: %s", acc_label, exc)
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Epic API error ({acc_label}): {exc}")
+                            break  # auth errors are not retryable
+                        except Exception as exc:
+                            _last_net_exc = exc
+                    if entries is None:
+                        if _last_net_exc:
+                            logger.error("Network error fetching history for %s (gave up): %s",
+                                         acc_label, _last_net_exc)
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Network error ({acc_label}) — try Upload Now again later.")
                         continue
 
                     all_entries.extend(entries)
@@ -427,25 +456,41 @@ class Application:
                     )
                     display_name = token_data.get("display_name") or acc_label
 
-                    logger.info("Fetching PsyNet history for %s (EGS path, batch=%d)",
-                                acc_label, batch_size)
-                    try:
-                        entries = self._epic.get_unuploaded_matches(
-                            access_token   = token_data["access_token"],
-                            account_id     = token_data["account_id"],
-                            display_name   = display_name,
-                            uploaded_guids = self._uploaded_guids,
-                            max_count      = batch_size,
-                        )
-                    except EpicAuthError as exc:
-                        logger.error("PsyNet history failed for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Epic API error ({acc_label}): {exc}")
-                        continue
-                    except Exception as exc:
-                        logger.error("Network error fetching history for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                    logger.info("Fetching PsyNet history for %s (EGS path)", acc_label)
+                    entries = None
+                    _last_net_exc = None
+                    for _attempt in range(3):
+                        if _attempt > 0:
+                            _wait = (15, 45)[_attempt - 1]
+                            logger.warning(
+                                "Network error for %s — retrying in %ds (attempt %d/3)…",
+                                acc_label, _wait, _attempt + 1,
+                            )
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Network error ({acc_label}) — retrying in {_wait}s…")
+                            time.sleep(_wait)
+                        try:
+                            entries = self._epic.get_unuploaded_matches(
+                                access_token   = token_data["access_token"],
+                                account_id     = token_data["account_id"],
+                                display_name   = display_name,
+                                uploaded_guids = self._uploaded_guids,
+                                max_count      = 20,
+                            )
+                            break
+                        except EpicAuthError as exc:
+                            logger.error("PsyNet history failed for %s: %s", acc_label, exc)
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Epic API error ({acc_label}): {exc}")
+                            break  # auth errors are not retryable
+                        except Exception as exc:
+                            _last_net_exc = exc
+                    if entries is None:
+                        if _last_net_exc:
+                            logger.error("Network error fetching history for %s (gave up): %s",
+                                         acc_label, _last_net_exc)
+                            self.root.after(0, self._win.set_statusbar,
+                                            f"Network error ({acc_label}) — try Upload Now again later.")
                         continue
 
                     all_entries.extend(entries)
@@ -575,6 +620,8 @@ class Application:
                 self._uploaded_guids.add(guid)
                 self.config.add_uploaded_guid(guid)
                 self.root.after(0, self._on_upload_done, result)
+        finally:
+            self._uploading_lock.release()
 
     def _write_stats_api_tickrate(self) -> None:
         """Set PacketSendRate=1 in DefaultStatsAPI.ini if not already set."""
