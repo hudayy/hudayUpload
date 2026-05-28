@@ -54,9 +54,8 @@ class Application:
         self._match_states: dict[str, dict] = {}
         # Pause flag — when True the StatsWatcher is stopped and won't reconnect
         self._paused: bool = False
-        self._rl_close_watcher_running: bool = False
-        # Close-watcher used when Stats API is fully disabled in settings
-        self._no_statsapi_watcher_running: bool = False
+        # Single always-on RL process watcher (replaces the old stats-off / paused watchers)
+        self._rl_process_watcher_running: bool = False
         # Current RL player name (detected via Stats API, for display only)
         self._current_rl_player: str = ""
 
@@ -76,12 +75,23 @@ class Application:
             self._watcher.start()
         else:
             self._win.set_stats_api_enabled(False)
-            self._ensure_no_statsapi_close_watcher()
+        # Always watch for RL process exit regardless of Stats API state.
+        # This catches the case where Stats API is enabled in settings but never
+        # connects (e.g. disabled inside RL, or RL crashed before Stats API init).
+        self._start_rl_process_watcher()
         self._start_event_pump()
         self._detect_rl_versions_async()
         self._verify_bc_token_async()
         self._check_for_update_async()
         self._write_stats_api_tickrate()
+        # On startup, immediately check for any replays that were missed while
+        # the app was closed (e.g. user played a session without hudayUpload running).
+        # The non-blocking lock means this is silently skipped if already uploading.
+        if self.config.auto_upload and self.config.has_epic_auth and self.config.has_bc_token:
+            threading.Thread(
+                target=self._run_epic_upload, args=(0.0,),
+                daemon=True, name="startup-upload-check",
+            ).start()
 
     def quit(self) -> None:
         self._watcher.stop()
@@ -111,11 +121,7 @@ class Application:
         self._watcher = StatsWatcher(port=self.config.stats_api_port)
         if self.config.stats_api_enabled and not self._paused:
             self._watcher.start()
-        else:
-            # Stats API just turned off (or was already off) — ensure we still
-            # detect RL closing so auto-upload keeps working
-            if not self.config.stats_api_enabled:
-                self._ensure_no_statsapi_close_watcher()
+        # Always-on process watcher already handles RL close detection
         self.root.after(0, self._win.set_stats_api_enabled, self.config.stats_api_enabled)
         self._detect_rl_versions_async()
         self._verify_bc_token_async()
@@ -137,90 +143,48 @@ class Application:
             logger.info("Monitoring paused by user")
             if self._win:
                 self.root.after(0, self._win.set_paused_state, True)
-            # Watch for RL closing while paused so we can still auto-upload
-            self._ensure_rl_close_watcher()
+            # Always-on process watcher continues running while paused
 
-    def _ensure_rl_close_watcher(self) -> None:
-        """Start a background thread that detects RL exit while monitoring is paused."""
-        if self._rl_close_watcher_running:
-            return
-        self._rl_close_watcher_running = True
-        threading.Thread(
-            target=self._rl_close_watch_loop,
-            daemon=True, name="rl-close-watch",
-        ).start()
+    def _start_rl_process_watcher(self) -> None:
+        """Start the always-on RL process watcher if not already running.
 
-    def _rl_close_watch_loop(self) -> None:
-        """Poll for RocketLeague.exe; when it exits trigger upload if games are pending."""
-        try:
-            was_running = _is_rl_running()
-            while self._paused:
-                now_running = _is_rl_running()
-                if was_running and not now_running:
-                    # RL just closed while we were paused
-                    if self.config.auto_upload:
-                        count = self._games_since_upload
-                        self._games_since_upload = 0
-                        delay = float(getattr(self.config, "post_game_delay",
-                                              _POST_GAME_DELAY_DEFAULT))
-                        msg = (
-                            f"Rocket League closed — uploading {count} game(s)…"
-                            if count > 0
-                            else "Rocket League closed — checking for new replays…"
-                        )
-                        logger.info("RL closed while paused — triggering upload (pending=%d)", count)
-                        self.root.after(0, self._win.set_statusbar, msg)
-                        threading.Thread(
-                            target=self._run_epic_upload,
-                            args=(delay,), daemon=True, name="auto-upload-paused",
-                        ).start()
-                    break
-                was_running = now_running
-                time.sleep(5)
-        finally:
-            self._rl_close_watcher_running = False
+        Runs unconditionally for the life of the app — regardless of whether the
+        Stats API is enabled or paused.  This ensures RL close is detected even
+        when the Stats API never connects (e.g. Stats API disabled inside RL,
+        RL crashed early, or monitoring is paused by the user).
 
-    def _ensure_no_statsapi_close_watcher(self) -> None:
-        """Start the Stats-API-off RL close watcher if it isn't already running."""
-        if self._no_statsapi_watcher_running:
-            return
-        self._no_statsapi_watcher_running = True
-        threading.Thread(
-            target=self._no_statsapi_close_watch_loop,
-            daemon=True, name="rl-close-watch-nostats",
-        ).start()
-
-    def _no_statsapi_close_watch_loop(self) -> None:
-        """Poll for RL exit when the Stats API is disabled.
-
-        Keeps looping (detecting each RL session) until Stats API is re-enabled.
-        Each time RL closes, triggers auto-upload so the user doesn't have to
-        hit 'Upload Now' manually.
+        The Stats API 'disconnected' event may also trigger an upload; the
+        non-blocking lock in _run_epic_upload prevents double uploads.
         """
+        if self._rl_process_watcher_running:
+            return
+        self._rl_process_watcher_running = True
+        threading.Thread(
+            target=self._rl_process_watcher_loop,
+            daemon=True, name="rl-process-watcher",
+        ).start()
+
+    def _rl_process_watcher_loop(self) -> None:
+        """Poll RocketLeague.exe every 5 s; trigger upload whenever it exits."""
         try:
             was_running = _is_rl_running()
-            while not self.config.stats_api_enabled:
+            while True:
                 time.sleep(5)
-                if self.config.stats_api_enabled:
-                    break
                 now_running = _is_rl_running()
                 if was_running and not now_running:
-                    # RL just closed
                     if self.config.auto_upload:
                         delay = float(getattr(self.config, "post_game_delay",
                                               _POST_GAME_DELAY_DEFAULT))
-                        logger.info(
-                            "RL closed (Stats API disabled) — triggering upload"
-                        )
+                        logger.info("RL process exit detected by process watcher — triggering upload")
                         self.root.after(0, self._win.set_statusbar,
                                         "Rocket League closed — checking for new replays…")
                         threading.Thread(
                             target=self._run_epic_upload,
-                            args=(delay,), daemon=True, name="auto-upload-nostats",
+                            args=(delay,), daemon=True, name="auto-upload-process-exit",
                         ).start()
                 was_running = now_running
         finally:
-            self._no_statsapi_watcher_running = False
+            self._rl_process_watcher_running = False
 
     def _refresh_epic_status_ui(self) -> None:
         accounts = self.config.get_epic_accounts()
