@@ -22,6 +22,10 @@ _DEFAULTS = {
     "post_game_delay": 45,
     "upload_batch_size": 15,
     "upload_every_n_games": 15,
+    # Game-mode filters — which playlist categories to upload (all on by default)
+    "upload_private": True,
+    "upload_ranked": True,
+    "upload_casual": True,
     # Rocky upload (lexore.ca)
     "rocky_enabled": False,
     # Stats API

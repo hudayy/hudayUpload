@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 _POST_GAME_DELAY_DEFAULT = 30.0  # fallback if config not loaded yet
 
+# Playlist IDs that count as "Ranked" — everything else that isn't Private (6)
+# is treated as Casual (1v1 cas, 2v2 cas, 3v3 cas, Hoops, Rumble, Dropshot…).
+_RANKED_PLAYLISTS: frozenset[int] = frozenset({10, 11, 12, 13, 28, 30, 32, 34, 38})
+_PRIVATE_PLAYLIST: int = 6
+
 
 def _is_rl_running() -> bool:
     """Return True if RocketLeague.exe is in the process list."""
@@ -463,10 +468,21 @@ class Application:
                     logger.warning("Account %s has no refresh token — skipping", acc_label)
                     continue
 
+            # ── Filter by enabled game modes ──────────────────────────────
+            before = len(all_entries)
+            all_entries = [e for e in all_entries if self._mode_allowed(e)]
+            skipped = before - len(all_entries)
+            if skipped:
+                logger.info("Skipped %d match(es) — game mode not enabled for upload", skipped)
+
             if not all_entries:
-                logger.info("No new unuploaded matches found across all accounts")
-                self.root.after(0, self._win.set_statusbar,
-                                "No new matches found in Epic history — try Upload Now later.")
+                msg = (
+                    "No new matches found in Epic history — try Upload Now later."
+                    if before == 0
+                    else "All new matches were skipped (game mode filter) — check Settings."
+                )
+                logger.info("Nothing to upload (found=%d, filtered=%d)", before, skipped)
+                self.root.after(0, self._win.set_statusbar, msg)
                 return
 
             # ── Upload all collected entries ───────────────────────────────
@@ -604,6 +620,15 @@ class Application:
             logger.info("Set PacketSendRate=1 in %s", ini)
         except Exception as exc:
             logger.warning("Could not update DefaultStatsAPI.ini: %s", exc)
+
+    def _mode_allowed(self, entry: dict) -> bool:
+        """Return True if this match's game mode is enabled for upload in settings."""
+        pid = int(entry.get("playlist_id", 0))
+        if pid == _PRIVATE_PLAYLIST:
+            return bool(self.config.upload_private)
+        if pid in _RANKED_PLAYLISTS:
+            return bool(self.config.upload_ranked)
+        return bool(self.config.upload_casual)  # everything else is casual
 
     def _psynet_player_name(self, entry: dict, display_name: str = "") -> str:
         """Return the in-game player name from the PsyNet match entry.

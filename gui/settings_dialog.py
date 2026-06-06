@@ -168,8 +168,18 @@ class SettingsDialog(tk.Toplevel):
             state="readonly", width=12,
         ).grid(row=3, column=1, sticky="w", pady=(10, 3))
 
+        ttk.Label(parent, text="Game modes").grid(row=4, column=0, sticky="w", pady=(8, 3))
+        modes_frame = ttk.Frame(parent)
+        modes_frame.grid(row=4, column=1, sticky="w", pady=(8, 3))
+        self._private_var = tk.BooleanVar()
+        self._ranked_var  = tk.BooleanVar()
+        self._casual_var  = tk.BooleanVar()
+        ttk.Checkbutton(modes_frame, text="Private", variable=self._private_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(modes_frame, text="Ranked",  variable=self._ranked_var ).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Checkbutton(modes_frame, text="Casual",  variable=self._casual_var ).pack(side=tk.LEFT, padx=(10, 0))
+
         ttk.Separator(parent, orient="horizontal").grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(12, 8)
+            row=5, column=0, columnspan=2, sticky="ew", pady=(12, 8)
         )
 
         self._rocky_var = tk.BooleanVar()
@@ -177,12 +187,12 @@ class SettingsDialog(tk.Toplevel):
             parent,
             text="Also upload to Rocky",
             variable=self._rocky_var,
-        ).grid(row=5, column=0, columnspan=2, sticky="w")
+        ).grid(row=6, column=0, columnspan=2, sticky="w")
 
         ttk.Button(
             parent, text="Rocky",
             command=lambda: webbrowser.open("https://lexore.ca/rocky/"),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
     # ── tab: Epic Games ───────────────────────────────────────────────────────
 
@@ -287,6 +297,9 @@ class SettingsDialog(tk.Toplevel):
         self._delay_var.set(int(self.cfg.post_game_delay))
         self._batch_var.set(int(self.cfg.upload_batch_size))
         self._every_n_var.set(int(self.cfg.upload_every_n_games))
+        self._private_var.set(bool(self.cfg.upload_private))
+        self._ranked_var.set(bool(self.cfg.upload_ranked))
+        self._casual_var.set(bool(self.cfg.upload_casual))
         self._rocky_var.set(bool(self.cfg.rocky_enabled))
         self._stats_api_enabled_var.set(bool(self.cfg.stats_api_enabled))
         self._refresh_epic_status()
@@ -315,6 +328,9 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.post_game_delay        = self._delay_var.get()
         self.cfg.upload_batch_size      = self._batch_var.get()
         self.cfg.upload_every_n_games   = self._every_n_var.get()
+        self.cfg.upload_private         = self._private_var.get()
+        self.cfg.upload_ranked          = self._ranked_var.get()
+        self.cfg.upload_casual          = self._casual_var.get()
         self.cfg.rocky_enabled          = self._rocky_var.get()
         self.cfg.stats_api_enabled      = self._stats_api_enabled_var.get()
         self.cfg.save()
