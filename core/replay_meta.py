@@ -37,7 +37,9 @@ PLAYLIST_NAMES: dict[int, str] = {
     28: "Ranked Rumble",
     29: "Ranked Dropshot",
     30: "Ranked Snowday",
-    34: "Heatseeker",
+    34: "Tournament",
+    38: "Heatseeker",
+    43: "Heatseeker Doubles",
 }
 
 

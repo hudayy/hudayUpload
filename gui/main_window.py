@@ -170,6 +170,7 @@ class MainWindow:
         self._tree.tag_configure("ok", foreground=_CLR_OK)
         self._tree.tag_configure("dup", foreground=_CLR_NEUTRAL)
         self._tree.tag_configure("err", foreground=_CLR_ERR)
+        self._tree.tag_configure("pending", foreground=_CLR_WARN)
 
         self._tree.bind("<Double-1>", self._on_row_double_click)
         self._url_map: dict[str, str] = {}
@@ -324,9 +325,13 @@ class MainWindow:
         duplicate: bool,
         url: str = "",
         error: str = "",
+        buffered: bool = False,
     ) -> None:
         ts = time.strftime("%H:%M:%S")
-        if ok and not duplicate:
+        if buffered:
+            status = "⏳ Buffered"
+            tag = "pending"
+        elif ok and not duplicate:
             status = "✅ Uploaded"
             tag = "ok"
         elif duplicate:

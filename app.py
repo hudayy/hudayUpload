@@ -10,6 +10,7 @@ from typing import Optional
 
 from core.config import Config
 from core.epic_auth import EpicAuthError, EpicClient, detect_rl_versions
+from core.pending_queue import PendingUploadStore
 from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
 from core.updater import check_for_update, download_and_install
@@ -50,6 +51,14 @@ class Application:
         self._uploading_lock = threading.Lock()
         self._win: Optional["MainWindow"] = None  # set after GUI is built
         self._tray = None
+        # Persistent buffer for replays that hit the ballchasing quota.
+        # Survives restarts (stored under %APPDATA%/RLReplayUploader/pending_uploads).
+        try:
+            self._pending = PendingUploadStore()
+            self._pending.cleanup_orphans()
+        except Exception as exc:
+            logger.warning("Pending buffer unavailable: %s", exc)
+            self._pending = None
 
         # Debounce: prevent MatchEnded + PodiumStart from counting as two games
         self._last_game_end: float = 0.0
@@ -475,21 +484,50 @@ class Application:
             if skipped:
                 logger.info("Skipped %d match(es) — game mode not enabled for upload", skipped)
 
-            if not all_entries:
-                msg = (
-                    "No new matches found in Epic history — try Upload Now later."
-                    if before == 0
-                    else "All new matches were skipped (game mode filter) — check Settings."
-                )
-                logger.info("Nothing to upload (found=%d, filtered=%d)", before, skipped)
-                self.root.after(0, self._win.set_statusbar, msg)
-                return
-
-            # ── Upload all collected entries ───────────────────────────────
+            # ── Upload client (also used for flushing the quota buffer) ─────
             client = BallchasingClient(
                 self.config.ballchasing_token,
                 self.config.ballchasing_visibility,
             )
+
+            # ── Flush persistent quota buffer first ─────────────────────────
+            # Replays buffered while the ballchasing quota was filled are stored
+            # on disk (survives restarts) — retry them now, oldest first.
+            quota_blocked = self._flush_pending_buffer(client)
+
+            # Skip matches that are already buffered — their replay bytes are on
+            # disk, so re-downloading from Epic would be wasteful (and the
+            # Epic replay URL may have expired). They will upload on flush.
+            if self._pending is not None:
+                try:
+                    pending_guids = self._pending.guids()
+                except Exception:
+                    pending_guids = set()
+                if pending_guids:
+                    n0 = len(all_entries)
+                    all_entries = [e for e in all_entries
+                                   if e.get("match_guid") not in pending_guids]
+                    if len(all_entries) != n0:
+                        logger.info("Skipped %d match(es) — already buffered",
+                                    n0 - len(all_entries))
+
+            if not all_entries:
+                pending_n = self._pending.count() if self._pending else 0
+                if pending_n > 0:
+                    msg = (f"Quota filled — {pending_n} replay(s) buffered, "
+                           f"will retry automatically.")
+                    logger.info("Nothing new to upload; %d buffered replay(s) pending",
+                                pending_n)
+                    self.root.after(0, self._win.set_statusbar, msg)
+                else:
+                    msg = (
+                        "No new matches found in Epic history — try Upload Now later."
+                        if before == 0
+                        else "All new matches were skipped (game mode filter) — check Settings."
+                    )
+                    logger.info("Nothing to upload (found=%d, filtered=%d)", before, skipped)
+                    self.root.after(0, self._win.set_statusbar, msg)
+                return
 
             for i, entry in enumerate(all_entries, 1):
                 guid         = entry["match_guid"]
@@ -572,11 +610,35 @@ class Application:
                 # Use the title as the filename — ballchasing sets the replay's
                 # display name from the uploaded filename, no API PATCH needed.
                 upload_name = f"{title}.replay" if title else filename
+                playlist_id = int(entry.get("playlist_id", 0) or props.get("Playlist") or 0)
+
+                if quota_blocked:
+                    # Quota already known-filled (buffer flush hit 429) — skip
+                    # the doomed upload attempt and buffer straight away.
+                    logger.info("Quota blocked — buffering %s without upload attempt",
+                                filename)
+                    self._buffer_for_retry(guid, upload_name, data,
+                                           display_name, playlist_id,
+                                           "ballchasing quota filled")
+                    # Rocky has no quota — still try it now.
+                    self._try_rocky_upload(upload_name, data, i, len(all_entries))
+                    continue
+
                 logger.info("Uploading %s as %r (visibility=%s)",
                             filename, upload_name, self.config.ballchasing_visibility)
                 self.root.after(0, self._win.set_statusbar,
                                 f"Uploading {i}/{len(all_entries)}: {upload_name} to ballchasing…")
                 result = client.upload_bytes(upload_name, data)
+
+                if getattr(result, "quota_exceeded", False):
+                    logger.warning("Ballchasing quota filled — buffering %s", filename)
+                    quota_blocked = True  # remaining replays buffer directly
+                    self._buffer_for_retry(guid, upload_name, data,
+                                           display_name, playlist_id,
+                                           result.error)
+                    # Rocky has no quota — still try it now.
+                    self._try_rocky_upload(upload_name, data, i, len(all_entries))
+                    continue
 
                 if result.ok and not result.duplicate:
                     logger.info("Upload successful — %s — %s", filename, result.url)
@@ -650,7 +712,9 @@ class Application:
         return (players[0].get("PlayerName") or "").strip() or clean
 
     def _on_upload_done(self, result: UploadResult) -> None:
-        if result.ok and not result.duplicate:
+        if getattr(result, "buffered", False):
+            msg = f"⏳ Buffered (quota filled): {result.filename} — will retry automatically"
+        elif result.ok and not result.duplicate:
             msg = f"✅ Uploaded {result.filename}"
         elif result.duplicate:
             msg = f"⏭ Already on ballchasing: {result.filename}"
@@ -664,7 +728,128 @@ class Application:
             duplicate=result.duplicate,
             url=result.url,
             error=result.error,
+            buffered=getattr(result, "buffered", False),
         )
+
+    # ── quota buffer ──────────────────────────────────────────────────────
+
+    def _buffer_for_retry(
+        self,
+        guid: str,
+        upload_name: str,
+        data: bytes,
+        display_name: str = "",
+        playlist_id: int = 0,
+        error: str = "",
+    ) -> None:
+        """Persist a replay to the on-disk buffer and show it as Buffered.
+
+        The GUID is deliberately NOT added to _uploaded_guids, so the replay
+        is never lost — it stays out of the uploaded set until ballchasing
+        actually accepts it (via _flush_pending_buffer).
+        """
+        if self._pending is not None:
+            try:
+                self._pending.add(guid, upload_name, data,
+                                  display_name, playlist_id, error)
+            except Exception as exc:
+                logger.warning("Buffer write failed for %s: %s", guid, exc)
+        else:
+            logger.warning("No pending store — cannot buffer %s (dropping)", guid)
+        buffered_result = UploadResult(
+            ok=False, filename=upload_name, error=error or "quota filled",
+            buffered=True, quota_exceeded=True,
+        )
+        self.root.after(0, self._on_upload_done, buffered_result)
+
+    def _try_rocky_upload(
+        self, upload_name: str, data: bytes, i: int, total: int
+    ) -> None:
+        """Best-effort Rocky upload for quota-buffered replays (Rocky has no quota)."""
+        if not getattr(self.config, "rocky_enabled", False):
+            return
+        try:
+            self.root.after(0, self._win.set_statusbar,
+                            f"Uploading {i}/{total}: {upload_name} to Rocky…")
+            rocky_result = RockyClient().upload_bytes(upload_name, data)
+            if rocky_result.ok and not rocky_result.duplicate:
+                logger.info("Rocky upload successful — %s", upload_name)
+            elif rocky_result.duplicate:
+                logger.info("Rocky: already uploaded (duplicate) — %s", upload_name)
+            else:
+                logger.error("Rocky upload failed — %s — %s",
+                             upload_name, rocky_result.error)
+        except Exception as exc:
+            logger.warning("Rocky upload error for %s: %s", upload_name, exc)
+
+    def _flush_pending_buffer(self, client: BallchasingClient) -> bool:
+        """Try uploading buffered replays, oldest first.
+
+        Returns True if the quota is still filled (caller should buffer new
+        replays directly instead of attempting uploads). Successful and
+        duplicate uploads are removed from the buffer and marked uploaded.
+        """
+        if self._pending is None:
+            return False
+        try:
+            pending = self._pending.list_pending()
+        except Exception as exc:
+            logger.warning("Could not list pending uploads: %s", exc)
+            return False
+        if not pending:
+            return False
+
+        logger.info("Flushing %d buffered replay(s)…", len(pending))
+        self.root.after(0, self._win.set_statusbar,
+                        f"Retrying {len(pending)} buffered replay(s)…")
+        quota_blocked = False
+        for item in pending:
+            guid = str(item.get("match_guid", "")).strip()
+            upload_name = str(item.get("upload_name", "") or f"{guid}.replay")
+            if not guid:
+                continue
+            data = self._pending.load_data(guid)
+            if data is None:
+                logger.warning("Buffered replay missing on disk — dropping %s", guid)
+                self._pending.remove(guid)
+                continue
+            self.root.after(0, self._win.set_statusbar,
+                            f"Retrying buffered replay: {upload_name}…")
+            try:
+                result = client.upload_bytes(upload_name, data)
+            except Exception as exc:
+                logger.warning("Buffered upload error for %s: %s", guid, exc)
+                continue  # keep buffered, try next
+            if getattr(result, "quota_exceeded", False):
+                logger.warning("Quota still filled — keeping %d replay(s) buffered",
+                               self._pending.count())
+                quota_blocked = True
+                break  # retrying the rest now would fail too
+            if result.ok:  # success or duplicate
+                self._pending.remove(guid)
+                self._uploaded_guids.add(guid)
+                try:
+                    self.config.add_uploaded_guid(guid)
+                except Exception:
+                    pass
+                logger.info("Buffered replay uploaded — %s", upload_name)
+                # Capture loop var explicitly for the Tk callback.
+                self.root.after(0, self._on_upload_done, result)
+            else:
+                # Non-quota failure (e.g. 400 bad file): keep buffered and
+                # move on so one bad file never blocks the rest of the queue.
+                logger.error("Buffered upload failed — %s — %s",
+                             upload_name, result.error)
+
+        remaining = self._pending.count()
+        if remaining > 0:
+            self.root.after(
+                0, self._win.set_statusbar,
+                f"Quota filled — {remaining} replay(s) buffered, will retry automatically.",
+            )
+        elif quota_blocked is False:
+            logger.info("Pending buffer fully flushed")
+        return quota_blocked
 
     # ── RL version detection ──────────────────────────────────────────────────
 

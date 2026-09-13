@@ -25,6 +25,17 @@ class UploadResult:
     filename: str = ""
     error: str = ""
     timestamp: float = field(default_factory=time.time)
+    # True when ballchasing refused the upload because the account's
+    # daily/weekly quota (or API rate limit) is exhausted (HTTP 429, or a
+    # body mentioning quota/rate-limit). Callers should buffer the replay
+    # and retry later instead of dropping it.
+    quota_exceeded: bool = False
+    buffered: bool = False
+
+
+def _is_quota_body(text: str) -> bool:
+    t = (text or "").lower()
+    return "quota" in t or "rate limit" in t or "ratelimit" in t or "too many" in t
 
 
 class BallchasingClient:
@@ -90,6 +101,12 @@ class BallchasingClient:
             if r.status_code == 409:
                 logger.info("Duplicate replay %s — already on ballchasing", filename)
                 return UploadResult(ok=True, duplicate=True, filename=filename)
+            if r.status_code == 429 or _is_quota_body(r.text):
+                err = f"HTTP {r.status_code}: {r.text[:200]}"
+                logger.warning("Ballchasing quota filled for %s: %s", filename, err)
+                return UploadResult(
+                    ok=False, quota_exceeded=True, error=err, filename=filename
+                )
             err = f"HTTP {r.status_code}: {r.text[:200]}"
             logger.error("Upload failed for %s: %s", filename, err)
             return UploadResult(ok=False, error=err, filename=filename)
@@ -118,6 +135,13 @@ class BallchasingClient:
             if r.status_code == 409:
                 logger.info("Duplicate replay %s — already on ballchasing", filename)
                 return UploadResult(ok=True, duplicate=True, filename=filename)
+
+            if r.status_code == 429 or _is_quota_body(r.text):
+                err = f"HTTP {r.status_code}: {r.text[:200]}"
+                logger.warning("Ballchasing quota filled for %s: %s", filename, err)
+                return UploadResult(
+                    ok=False, quota_exceeded=True, error=err, filename=filename
+                )
 
             err = f"HTTP {r.status_code}: {r.text[:200]}"
             logger.error("Upload failed for %s: %s", filename, err)
