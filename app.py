@@ -40,6 +40,14 @@ def _is_rl_running() -> bool:
 
 
 
+def _psynet_error_msg(acc_label: str, exc: Exception) -> str:
+    """Status-bar text for a PsyNet history failure."""
+    if "BuildNotFound" in str(exc):
+        return (f"Epic API error ({acc_label}): PsyNet doesn't recognise this "
+                f"Rocket League build — the uploader needs an update.")
+    return f"Epic API error ({acc_label}): {exc}"
+
+
 class Application:
     def __init__(self, root) -> None:
         import tkinter as tk
@@ -338,6 +346,7 @@ class Application:
             self.root.after(0, self._win.set_statusbar, "Fetching matches from Epic API…")
 
             all_entries: list[dict] = []
+            fetch_errors: list[str] = []  # shown instead of "no new matches" if nothing was fetched
 
             # ── Collect unuploaded matches from every account ──────────────
             for account in accounts:
@@ -352,14 +361,14 @@ class Application:
                         eos_data = self._epic.refresh_eos_token(eos_rt)
                     except EpicAuthError as exc:
                         logger.error("EOS token refresh failed for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Epic session expired for {acc_label} — "
-                                        f"re-add account in Settings. ({exc})")
+                        fetch_errors.append(f"Epic session expired for {acc_label} — "
+                                            f"re-add account in Settings. ({exc})")
+                        self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
                     except Exception as exc:
                         logger.error("Network error refreshing EOS token for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        fetch_errors.append(f"Network error ({acc_label}) — will retry next game: {exc}")
+                        self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
 
                     self.config.update_epic_account_eos_token(
@@ -393,8 +402,8 @@ class Application:
                             break
                         except EpicAuthError as exc:
                             logger.error("PsyNet history failed for %s: %s", acc_label, exc)
-                            self.root.after(0, self._win.set_statusbar,
-                                            f"Epic API error ({acc_label}): {exc}")
+                            fetch_errors.append(_psynet_error_msg(acc_label, exc))
+                            self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                             break  # auth errors are not retryable
                         except Exception as exc:
                             _last_net_exc = exc
@@ -402,8 +411,9 @@ class Application:
                         if _last_net_exc:
                             logger.error("Network error fetching history for %s (gave up): %s",
                                          acc_label, _last_net_exc)
-                            self.root.after(0, self._win.set_statusbar,
-                                            f"Network error ({acc_label}) — try Upload Now again later.")
+                            fetch_errors.append(
+                                f"Network error ({acc_label}) — try Upload Now again later.")
+                            self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
 
                     all_entries.extend(entries)
@@ -417,14 +427,14 @@ class Application:
                                     token_data.get("display_name") or token_data.get("account_id"))
                     except EpicAuthError as exc:
                         logger.error("EGS token refresh failed for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Epic login expired for {acc_label} — "
-                                        f"re-authenticate in Settings. ({exc})")
+                        fetch_errors.append(f"Epic login expired for {acc_label} — "
+                                            f"re-authenticate in Settings. ({exc})")
+                        self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
                     except Exception as exc:
                         logger.error("Network error refreshing EGS token for %s: %s", acc_label, exc)
-                        self.root.after(0, self._win.set_statusbar,
-                                        f"Network error ({acc_label}) — will retry next game: {exc}")
+                        fetch_errors.append(f"Network error ({acc_label}) — will retry next game: {exc}")
+                        self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
 
                     self.config.update_epic_account_token(
@@ -458,8 +468,8 @@ class Application:
                             break
                         except EpicAuthError as exc:
                             logger.error("PsyNet history failed for %s: %s", acc_label, exc)
-                            self.root.after(0, self._win.set_statusbar,
-                                            f"Epic API error ({acc_label}): {exc}")
+                            fetch_errors.append(_psynet_error_msg(acc_label, exc))
+                            self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                             break  # auth errors are not retryable
                         except Exception as exc:
                             _last_net_exc = exc
@@ -467,8 +477,9 @@ class Application:
                         if _last_net_exc:
                             logger.error("Network error fetching history for %s (gave up): %s",
                                          acc_label, _last_net_exc)
-                            self.root.after(0, self._win.set_statusbar,
-                                            f"Network error ({acc_label}) — try Upload Now again later.")
+                            fetch_errors.append(
+                                f"Network error ({acc_label}) — try Upload Now again later.")
+                            self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                         continue
 
                     all_entries.extend(entries)
@@ -519,6 +530,9 @@ class Application:
                     logger.info("Nothing new to upload; %d buffered replay(s) pending",
                                 pending_n)
                     self.root.after(0, self._win.set_statusbar, msg)
+                elif before == 0 and fetch_errors:
+                    logger.info("Nothing to upload — history fetch failed")
+                    self.root.after(0, self._win.set_statusbar, fetch_errors[-1])
                 else:
                     msg = (
                         "No new matches found in Epic history — try Upload Now later."

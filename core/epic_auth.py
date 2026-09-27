@@ -59,10 +59,15 @@ _PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
 
 # These three are updated at runtime by detect_rl_versions(); the values below
 # are last-known fallbacks used only when Launch.log / the RL binary cannot be read.
-# Last verified: RL build 23106173, updated 2026-05-12.
-_PSY_GAME_VER    = "260506.26700.517210"
-_PSY_FEATURE_SET = "PrimeUpdate58_1"
-_PSY_BUILD_ID    = "-1652286008"
+# Last verified: RL 260918.75141.528314, updated 2026-09-27.
+_PSY_GAME_VER    = "260918.75141.528314"
+_PSY_FEATURE_SET = "PrimeUpdate60"
+_PSY_BUILD_ID    = "246758282"
+
+# Sent as the PsyBuildSecret header on HTTP RPCs (required since RL 260918,
+# PrimeUpdate60). Not written to Launch.log and rotates with patches — take the
+# current value from github.com/dank/rlapi (psynet.go, `buildSecret`).
+_PSY_BUILD_SECRET = "ce31914a39dbf2f3ab13ea54d00b7fe87bc5473a2f04707d78de54039ded8951"
 
 # Compiled patterns for Launch.log parsing
 _RE_LOG_FEATURE_SET = re.compile(r"Using feature set (\S+)")
@@ -559,6 +564,7 @@ class EpicClient:
                 "PsyEnvironment": "Prod",
                 "PsyRequestID":   request_id,
                 "PsySig":         _psy_sig(body_bytes),
+                "PsyBuildSecret": _PSY_BUILD_SECRET,
             },
             timeout=30,
         )
