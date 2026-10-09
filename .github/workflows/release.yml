@@ -1,0 +1,71 @@
+# Builds hudayUpload.exe on Windows and publishes it as a GitHub release.
+# Trigger: push a tag like v1.7.11 (must match VERSION in core/updater.py),
+# or run manually from the Actions tab with an existing tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v1.7.11)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Check tag matches app version
+        shell: bash
+        run: |
+          v=$(python -c "import re;print(re.search(r'VERSION = \"(.+?)\"', open('core/updater.py').read())[1])")
+          [ "v$v" = "$TAG" ] || { echo "Tag $TAG != VERSION $v in core/updater.py"; exit 1; }
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Same as rebuild_bootloader.bat: a freshly compiled bootloader avoids
+      # antivirus signatures on the stock PyInstaller one.
+      - name: Rebuild PyInstaller bootloader
+        shell: bash
+        run: |
+          PYIVER=$(python -c "import PyInstaller; print(PyInstaller.__version__)")
+          git clone --depth 1 --branch "v$PYIVER" https://github.com/pyinstaller/pyinstaller pyinstaller_src
+          cd pyinstaller_src/bootloader && python waf all --target-arch=64bit && cd ../..
+          pip install ./pyinstaller_src
+
+      - name: Build exe
+        run: |
+          python make_icon.py
+          pyinstaller hudayUpload.spec --noconfirm
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f dist/hudayUpload.exe
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/hudayUpload.exe --clobber
+          else
+            git log -1 --format=%B "$TAG" | sed '/^Co-Authored-By:/d' > notes.md
+            gh release create "$TAG" dist/hudayUpload.exe --title "$TAG" --notes-file notes.md
+          fi
