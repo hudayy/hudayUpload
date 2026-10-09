@@ -1,8 +1,11 @@
 """Main application window — native-looking Windows GUI."""
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
+
+from gui.fonts import scale_named_fonts, ui_font, ui_px
 import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -63,6 +66,9 @@ class MainWindow:
         _apply_theme(root)
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        if sys.platform == "darwin":
+            # Clicking the Dock icon restores the window
+            root.createcommand("::tk::mac::ReopenApplication", self.show)
         self._build()
         self._refresh_status()
 
@@ -84,7 +90,7 @@ class MainWindow:
         except Exception:
             pass
 
-        ttk.Label(header, text=_APP_NAME, font=("Segoe UI", 13, "bold")).pack(
+        ttk.Label(header, text=_APP_NAME, font=ui_font(13, "bold")).pack(
             side=tk.LEFT
         )
 
@@ -136,7 +142,7 @@ class MainWindow:
                                 highlightbackground=_BANNER_WARN_EDGE, highlightthickness=1)
         self._banner_lbl = tk.Label(
             self._banner, bg=_BANNER_WARN_BG, fg=_BANNER_WARN_FG,
-            font=("Segoe UI", 9), anchor="w", padx=10, pady=6,
+            font=ui_font(9), anchor="w", padx=10, pady=6,
             text="", cursor="hand2",
         )
         self._banner_lbl.pack(fill=tk.X)
@@ -255,19 +261,19 @@ class MainWindow:
             inner.pack(fill=tk.X, padx=10, pady=5)
             self._update_lbl = tk.Label(
                 inner, bg=_BANNER_UPD_BG, fg=_BANNER_UPD_FG,
-                font=("Segoe UI", 9), anchor="w",
+                font=ui_font(9), anchor="w",
             )
             self._update_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self._update_btn = tk.Button(
                 inner, text="Update now", bg="#1565C0", fg="white",
-                font=("Segoe UI", 9, "bold"), relief="flat",
+                font=ui_font(9, "bold"), relief="flat",
                 padx=10, cursor="hand2",
                 activebackground="#0D47A1", activeforeground="white",
             )
             self._update_btn.pack(side=tk.RIGHT, padx=(6, 0))
             self._dismiss_btn = tk.Button(
                 inner, text="Later", bg=_BANNER_UPD_BG, fg="#9E9E9E",
-                font=("Segoe UI", 9), relief="flat", padx=6, cursor="hand2",
+                font=ui_font(9), relief="flat", padx=6, cursor="hand2",
             )
             self._dismiss_btn.pack(side=tk.RIGHT)
 
@@ -378,7 +384,10 @@ class MainWindow:
         SettingsDialog(self.root, self.app)
 
     def _minimize_to_tray(self) -> None:
-        self.root.withdraw()
+        if sys.platform == "darwin":
+            self.root.iconify()  # no tray on macOS — minimize to the Dock
+        else:
+            self.root.withdraw()
 
     def _on_close(self) -> None:
         self._minimize_to_tray()
@@ -434,18 +443,19 @@ class _Dot(tk.Canvas):
 def _apply_theme(root: tk.Tk) -> None:
     import sv_ttk
     sv_ttk.set_theme("dark")
+    scale_named_fonts(root)
 
     root.configure(bg=_CLR_BG)
 
     style = ttk.Style(root)
-    style.configure("TLabel",           font=("Segoe UI", 9))
-    style.configure("TButton",          font=("Segoe UI", 9))
-    style.configure("TEntry",           font=("Segoe UI", 9))
-    style.configure("TSpinbox",         font=("Segoe UI", 9))
-    style.configure("TCombobox",        font=("Segoe UI", 9))
-    style.configure("TLabelframe.Label",font=("Segoe UI", 9, "bold"))
-    style.configure("Treeview",         font=("Segoe UI", 9), rowheight=22)
-    style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
+    style.configure("TLabel",           font=ui_font(9))
+    style.configure("TButton",          font=ui_font(9))
+    style.configure("TEntry",           font=ui_font(9))
+    style.configure("TSpinbox",         font=ui_font(9))
+    style.configure("TCombobox",        font=ui_font(9))
+    style.configure("TLabelframe.Label",font=ui_font(9, "bold"))
+    style.configure("Treeview",         font=ui_font(9), rowheight=ui_px(22))
+    style.configure("Treeview.Heading", font=ui_font(9, "bold"))
 
     # Apply Windows dark title bar after the window is realised on screen
     # (DwmSetWindowAttribute needs the HWND to be visible; scheduling via after()

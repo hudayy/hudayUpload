@@ -1,10 +1,15 @@
 """Config management — stores settings in %APPDATA%\\RLReplayUploader."""
 import json
 import os
-import winreg
+import sys
 from pathlib import Path
 
-APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+if sys.platform == "win32":
+    import winreg
+    APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+else:
+    winreg = None
+    APPDATA = Path.home() / "Library" / "Application Support"
 CONFIG_DIR = APPDATA / "RLReplayUploader"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 UPLOADED_FILE = CONFIG_DIR / "uploaded.txt"          # legacy filename store
@@ -192,6 +197,8 @@ def _default_replays_path() -> str:
 def _detect_rl_install() -> str:
     # Try Steam registry
     try:
+        if winreg is None:
+            raise OSError
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 252950",

@@ -59,15 +59,15 @@ _PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
 
 # These three are updated at runtime by detect_rl_versions(); the values below
 # are last-known fallbacks used only when Launch.log / the RL binary cannot be read.
-# Last verified: RL 260918.75141.528314, updated 2026-09-27.
-_PSY_GAME_VER    = "260918.75141.528314"
+# Last verified: RL 261001.2867.529371, updated 2026-10-08.
+_PSY_GAME_VER    = "261001.2867.529371"
 _PSY_FEATURE_SET = "PrimeUpdate60"
-_PSY_BUILD_ID    = "246758282"
+_PSY_BUILD_ID    = "-1846618557"
 
 # Sent as the PsyBuildSecret header on HTTP RPCs (required since RL 260918,
 # PrimeUpdate60). Not written to Launch.log and rotates with patches — take the
 # current value from github.com/dank/rlapi (psynet.go, `buildSecret`).
-_PSY_BUILD_SECRET = "ce31914a39dbf2f3ab13ea54d00b7fe87bc5473a2f04707d78de54039ded8951"
+_PSY_BUILD_SECRET = "1c72102bca07fb3ba34ef640656901df0658107ffe17bb3a6e9cd1cc578392ea"
 
 # Compiled patterns for Launch.log parsing
 _RE_LOG_FEATURE_SET = re.compile(r"Using feature set (\S+)")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import subprocess
 import threading
 import time
@@ -29,6 +30,10 @@ _PRIVATE_PLAYLIST: int = 6
 def _is_rl_running() -> bool:
     """Return True if RocketLeague.exe is in the process list."""
     try:
+        if sys.platform != "win32":
+            out = subprocess.run(["pgrep", "-if", "RocketLeague"],
+                                 capture_output=True, text=True, timeout=5)
+            return bool(out.stdout.strip())
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq RocketLeague.exe", "/NH"],
             capture_output=True, text=True, timeout=5,
@@ -960,11 +965,14 @@ class Application:
     # ── system tray ───────────────────────────────────────────────────────────
 
     def _start_tray(self) -> None:
+        if sys.platform == "darwin":
+            # pystray needs the AppKit main thread, which tkinter owns
+            logger.info("System tray not supported on macOS — disabled")
+            return
         try:
             import pystray
             from PIL import Image
 
-            import sys
             _base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
             icon_path = _base / "assets" / "icon.png"
             icon_img = Image.open(icon_path).resize((64, 64), Image.LANCZOS)

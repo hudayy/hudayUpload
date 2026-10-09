@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 import time
 import tkinter as tk
+
+from gui.fonts import ui_font
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -218,7 +220,7 @@ class SettingsDialog(tk.Toplevel):
             foreground="#CCCCCC",
             selectbackground="#42A5F5",
             selectforeground="#FFFFFF",
-            font=("Segoe UI", 9),
+            font=ui_font(9),
         )
         self._epic_list.grid(row=0, column=0, sticky="ew")
 
@@ -663,6 +665,8 @@ class SettingsDialog(tk.Toplevel):
 
 def _apply_startup(enable: bool) -> None:
     import sys
+    if sys.platform != "win32":
+        return
     import winreg
 
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
