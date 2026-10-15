@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import Config
-from core.epic_auth import EpicAuthError, EpicClient, detect_rl_versions
+from core.epic_auth import EpicAuthError, EpicClient, detect_rl_versions, refresh_build_secret
 from core.pending_queue import PendingUploadStore
 from core.replay_meta import build_title, parse_header, write_replay_name
 from core.stats_watcher import StatsWatcher
@@ -47,7 +47,7 @@ def _is_rl_running() -> bool:
 
 def _psynet_error_msg(acc_label: str, exc: Exception) -> str:
     """Status-bar text for a PsyNet history failure."""
-    if "BuildNotFound" in str(exc):
+    if "BuildNotFound" in str(exc) or "VersionMismatch" in str(exc):
         return (f"Epic API error ({acc_label}): PsyNet doesn't recognise this "
                 f"Rocket League build — the uploader needs an update.")
     return f"Epic API error ({acc_label}): {exc}"
@@ -880,13 +880,14 @@ class Application:
         constants (which worked for the last known RL version).
         """
         install_path = self.config.rl_install_path
-        if not install_path:
-            logger.debug(
-                "RL install path not configured — skipping PsyNet version detection"
-            )
-            return
 
         def _scan() -> None:
+            refresh_build_secret()
+            if not install_path:
+                logger.debug(
+                    "RL install path not configured — skipping PsyNet version detection"
+                )
+                return
             ok = detect_rl_versions(install_path)
             if not ok:
                 logger.warning(

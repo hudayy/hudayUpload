@@ -69,6 +69,43 @@ _PSY_BUILD_ID    = "-1846618557"
 # current value from github.com/dank/rlapi (psynet.go, `buildSecret`).
 _PSY_BUILD_SECRET = "1c72102bca07fb3ba34ef640656901df0658107ffe17bb3a6e9cd1cc578392ea"
 
+# Public source of the current build secret / game version (updated after each RL patch).
+_BUILD_SECRET_SRC = "https://raw.githubusercontent.com/dank/rlapi/HEAD/psynet.go"
+_RE_SRC_SECRET    = re.compile(r'buildSecret\s*=\s*"([0-9a-fA-F]{32,128})"')
+_RE_SRC_GAME_VER  = re.compile(r'gameVersion\s*=\s*"(\d+\.\d+\.\d+)"')
+
+
+def refresh_build_secret() -> bool:
+    """Fetch the current PsyBuildSecret from dank/rlapi and update the global.
+
+    The secret rotates with every RL patch and is not written to Launch.log, so
+    the built-in value goes stale. Returns True if a value was read (even if it
+    equals the current one); False on any failure, leaving the fallback in place.
+    """
+    global _PSY_BUILD_SECRET
+    try:
+        resp = requests.get(_BUILD_SECRET_SRC, timeout=10)
+        resp.raise_for_status()
+        text = resp.text
+        m = _RE_SRC_SECRET.search(text)
+        if not m:
+            logger.warning("refresh_build_secret: no buildSecret found in source")
+            return False
+        src_ver = (v := _RE_SRC_GAME_VER.search(text)) and v.group(1)
+        if src_ver and src_ver != _PSY_GAME_VER:
+            logger.warning(
+                "refresh_build_secret: source is for RL %s but installed build is %s — "
+                "using it anyway", src_ver, _PSY_GAME_VER,
+            )
+        if m.group(1) != _PSY_BUILD_SECRET:
+            logger.info("PsyNet build secret updated from rlapi source")
+            _PSY_BUILD_SECRET = m.group(1)
+        return True
+    except Exception as exc:
+        logger.warning("refresh_build_secret failed — %s", exc)
+        return False
+
+
 # Compiled patterns for Launch.log parsing
 _RE_LOG_FEATURE_SET = re.compile(r"Using feature set (\S+)")
 _RE_LOG_BUILD_ID    = re.compile(r"BuildID:\s*(-?\d+)")
@@ -533,7 +570,7 @@ class EpicClient:
     # ── PsyNet HTTP auth ──────────────────────────────────────────────────────
 
     def _psynet_auth(
-        self, eos_token: str, account_id: str, display_name: str
+        self, eos_token: str, account_id: str, display_name: str, _retry: bool = False
     ) -> tuple[str, str, str]:
         """POST AuthPlayer/v2 → returns (ws_url, psy_token, session_id)."""
         body_obj = {
@@ -575,6 +612,10 @@ class EpicClient:
         wrapper = resp.json()
         err = wrapper.get("Error")
         if err:
+            if not _retry and str(err.get("Type", err) if isinstance(err, dict) else err) in (
+                "BuildNotFound", "VersionMismatch",
+            ) and refresh_build_secret():
+                return self._psynet_auth(eos_token, account_id, display_name, _retry=True)
             raise EpicAuthError(f"PsyNet error: {err}")
 
         result = wrapper["Result"]
