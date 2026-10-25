@@ -59,15 +59,15 @@ _PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
 
 # These three are updated at runtime by detect_rl_versions(); the values below
 # are last-known fallbacks used only when Launch.log / the RL binary cannot be read.
-# Last verified: RL 261001.2867.529371, updated 2026-10-08.
-_PSY_GAME_VER    = "261001.2867.529371"
-_PSY_FEATURE_SET = "PrimeUpdate60"
-_PSY_BUILD_ID    = "-1846618557"
+# Last verified: RL 261013.63066.530866, updated 2026-10-24.
+_PSY_GAME_VER    = "261013.63066.530866"
+_PSY_FEATURE_SET = "PrimeUpdate60_1"
+_PSY_BUILD_ID    = "-1885667689"
 
 # Sent as the PsyBuildSecret header on HTTP RPCs (required since RL 260918,
 # PrimeUpdate60). Not written to Launch.log and rotates with patches — take the
 # current value from github.com/dank/rlapi (psynet.go, `buildSecret`).
-_PSY_BUILD_SECRET = "1c72102bca07fb3ba34ef640656901df0658107ffe17bb3a6e9cd1cc578392ea"
+_PSY_BUILD_SECRET = "76656a5b51ec57a13549eef732c8a8367638aa3a7989bade1f7e4e5f93d57625"
 
 # Public source of the current build secret / game version (updated after each RL patch).
 _BUILD_SECRET_SRC = "https://raw.githubusercontent.com/dank/rlapi/HEAD/psynet.go"
