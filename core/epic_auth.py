@@ -59,51 +59,104 @@ _PSY_SIG_KEY     = b"c338bd36fb8c42b1a431d30add939fc7"
 
 # These three are updated at runtime by detect_rl_versions(); the values below
 # are last-known fallbacks used only when Launch.log / the RL binary cannot be read.
-# Last verified: RL 261013.63066.530866, updated 2026-10-24.
-_PSY_GAME_VER    = "261013.63066.530866"
+# Last verified: RL 261031.63733.533021, updated 2026-11-05.
+_PSY_GAME_VER    = "261031.63733.533021"
 _PSY_FEATURE_SET = "PrimeUpdate60_1"
-_PSY_BUILD_ID    = "-1885667689"
+_PSY_BUILD_ID    = "-242096153"
 
 # Sent as the PsyBuildSecret header on HTTP RPCs (required since RL 260918,
-# PrimeUpdate60). Not written to Launch.log and rotates with patches — take the
-# current value from github.com/dank/rlapi (psynet.go, `buildSecret`).
-_PSY_BUILD_SECRET = "76656a5b51ec57a13549eef732c8a8367638aa3a7989bade1f7e4e5f93d57625"
+# PrimeUpdate60). Not written to Launch.log and rotates with every patch; it must
+# match the game version sent, or PsyNet answers BuildNotFound. Values come from
+# github.com/dank/rlapi (psynet.go, `buildSecret`).
+_PSY_BUILD_SECRET = "eba094a6fd9abbdf913dcbadf18ab59682671cdcc7cebc4902b81113273f5fa3"
 
-# Public source of the current build secret / game version (updated after each RL patch).
-_BUILD_SECRET_SRC = "https://raw.githubusercontent.com/dank/rlapi/HEAD/psynet.go"
+# Secrets for builds we've seen, so a game that hasn't updated yet (or just has)
+# gets the matching one without a network lookup.
+_KNOWN_BUILD_SECRETS = {
+    "261013.63066.530866": "76656a5b51ec57a13549eef732c8a8367638aa3a7989bade1f7e4e5f93d57625",
+    "261031.63733.533021": "eba094a6fd9abbdf913dcbadf18ab59682671cdcc7cebc4902b81113273f5fa3",
+}
+
+# dank/rlapi publishes each new secret in psynet.go: first in an open
+# "Bump version to `<ver>`" PR from its bot, then on the default branch once merged.
+_RLAPI_REPO       = "dank/rlapi"
+_RLAPI_RAW        = "https://raw.githubusercontent.com/" + _RLAPI_REPO + "/{ref}/psynet.go"
+_RLAPI_PULLS      = "https://api.github.com/repos/" + _RLAPI_REPO + "/pulls?state=open&per_page=30"
 _RE_SRC_SECRET    = re.compile(r'buildSecret\s*=\s*"([0-9a-fA-F]{32,128})"')
 _RE_SRC_GAME_VER  = re.compile(r'gameVersion\s*=\s*"(\d+\.\d+\.\d+)"')
 
 
-def refresh_build_secret() -> bool:
-    """Fetch the current PsyBuildSecret from dank/rlapi and update the global.
+def build_id_for(game_version: str) -> str:
+    """PsyBuildID for a game version: big-endian CRC-32 of its UTF-16LE bytes.
 
-    The secret rotates with every RL patch and is not written to Launch.log, so
-    the built-in value goes stale. Returns True if a value was read (even if it
-    equals the current one); False on any failure, leaving the fallback in place.
+    This is what RL itself logs as "BuildID: <n> from GPsyonixBuildID"
+    (port of decodeBuildID in dank/rlapi's buildid.go).
+    """
+    crc = 0xFFFFFFFF
+    for b in game_version.encode("utf-16-le"):
+        crc ^= b << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) if crc & 0x80000000 else (crc << 1)
+            crc &= 0xFFFFFFFF
+    crc ^= 0xFFFFFFFF
+    return str(crc - (1 << 32) if crc & 0x80000000 else crc)
+
+
+def _rlapi_secret_at(ref: str) -> "tuple[str, str] | None":
+    """(gameVersion, buildSecret) from rlapi's psynet.go at a git ref, or None."""
+    resp = requests.get(_RLAPI_RAW.format(ref=ref), timeout=10)
+    resp.raise_for_status()
+    ver = _RE_SRC_GAME_VER.search(resp.text)
+    sec = _RE_SRC_SECRET.search(resp.text)
+    return (ver.group(1), sec.group(1)) if ver and sec else None
+
+
+def _lookup_rlapi_secret(game_version: str) -> "str | None":
+    """Find the build secret for ``game_version`` in dank/rlapi: the default
+    branch, then open version-bump PRs (which land days before they're merged)."""
+    found = _rlapi_secret_at("HEAD")
+    if found and found[0] == game_version:
+        return found[1]
+    resp = requests.get(_RLAPI_PULLS, timeout=10,
+                        headers={"Accept": "application/vnd.github+json"})
+    resp.raise_for_status()
+    for pr in resp.json():
+        if game_version in (pr.get("title") or ""):
+            found = _rlapi_secret_at(pr["head"]["sha"])
+            if found and found[0] == game_version:
+                return found[1]
+    return None
+
+
+def refresh_build_secret() -> bool:
+    """Set ``_PSY_BUILD_SECRET`` to the secret for the current ``_PSY_GAME_VER``.
+
+    Call after detect_rl_versions() so the secret matches the installed game.
+    Returns True when a matching secret is in place; False if none could be found
+    (the existing value is left alone, and PsyNet will likely say BuildNotFound).
     """
     global _PSY_BUILD_SECRET
-    try:
-        resp = requests.get(_BUILD_SECRET_SRC, timeout=10)
-        resp.raise_for_status()
-        text = resp.text
-        m = _RE_SRC_SECRET.search(text)
-        if not m:
-            logger.warning("refresh_build_secret: no buildSecret found in source")
+    secret = _KNOWN_BUILD_SECRETS.get(_PSY_GAME_VER)
+    if not secret:
+        try:
+            secret = _lookup_rlapi_secret(_PSY_GAME_VER)
+        except Exception as exc:
+            logger.warning("Build secret lookup for RL %s failed: %s", _PSY_GAME_VER, exc)
             return False
-        src_ver = (v := _RE_SRC_GAME_VER.search(text)) and v.group(1)
-        if src_ver and src_ver != _PSY_GAME_VER:
-            logger.warning(
-                "refresh_build_secret: source is for RL %s but installed build is %s — "
-                "using it anyway", src_ver, _PSY_GAME_VER,
-            )
-        if m.group(1) != _PSY_BUILD_SECRET:
-            logger.info("PsyNet build secret updated from rlapi source")
-            _PSY_BUILD_SECRET = m.group(1)
-        return True
-    except Exception as exc:
-        logger.warning("refresh_build_secret failed — %s", exc)
-        return False
+        if not secret:
+            logger.warning("No build secret published yet for RL %s", _PSY_GAME_VER)
+            return False
+        _KNOWN_BUILD_SECRETS[_PSY_GAME_VER] = secret
+    if secret != _PSY_BUILD_SECRET:
+        logger.info("PsyNet build secret set for RL %s", _PSY_GAME_VER)
+        _PSY_BUILD_SECRET = secret
+    return True
+
+
+def sync_psynet_build(rl_install_path: str = "") -> None:
+    """Re-read the installed RL version, then pick the matching build secret."""
+    detect_rl_versions(rl_install_path)
+    refresh_build_secret()
 
 
 # Compiled patterns for Launch.log parsing
@@ -162,6 +215,8 @@ def detect_rl_versions(rl_install_path: str) -> bool:
             new_fs  = (m := _RE_LOG_FEATURE_SET.search(text)) and m.group(1)
             new_bid = (m := _RE_LOG_BUILD_ID.search(text))    and m.group(1)
             new_ver = (m := _RE_LOG_GAME_VER.search(text))    and m.group(1)
+            if new_ver and not new_bid:
+                new_bid = build_id_for(new_ver)
 
             changed = False
             if new_fs and new_fs != _PSY_FEATURE_SET:
@@ -191,6 +246,8 @@ def detect_rl_versions(rl_install_path: str) -> bool:
 
     # ── Method 2: Binary scan (fallback — only recovers FeatureSet) ─────────
     # PsyNet SDK strings are UTF-16 in recent RL builds; BuildID is obfuscated.
+    if not rl_install_path:
+        return False
     try:
         # Accept both the root install dir and the TAGame subdir in config
         candidates = [Path(rl_install_path)]
@@ -612,10 +669,14 @@ class EpicClient:
         wrapper = resp.json()
         err = wrapper.get("Error")
         if err:
-            if not _retry and str(err.get("Type", err) if isinstance(err, dict) else err) in (
-                "BuildNotFound", "VersionMismatch",
-            ) and refresh_build_secret():
-                return self._psynet_auth(eos_token, account_id, display_name, _retry=True)
+            err_type = str(err.get("Type", err) if isinstance(err, dict) else err)
+            if not _retry and err_type in ("BuildNotFound", "VersionMismatch"):
+                # RL may have patched since we last looked: re-read Launch.log,
+                # fetch the matching secret, and try once more if anything changed.
+                before = (_PSY_GAME_VER, _PSY_BUILD_ID, _PSY_BUILD_SECRET)
+                sync_psynet_build()
+                if (_PSY_GAME_VER, _PSY_BUILD_ID, _PSY_BUILD_SECRET) != before:
+                    return self._psynet_auth(eos_token, account_id, display_name, _retry=True)
             raise EpicAuthError(f"PsyNet error: {err}")
 
         result = wrapper["Result"]

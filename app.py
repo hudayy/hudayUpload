@@ -882,18 +882,15 @@ class Application:
         install_path = self.config.rl_install_path
 
         def _scan() -> None:
-            refresh_build_secret()
-            if not install_path:
-                logger.debug(
-                    "RL install path not configured — skipping PsyNet version detection"
-                )
-                return
+            # Launch.log is read even without an install path. The secret is
+            # per-build, so pick it only once the version is known.
             ok = detect_rl_versions(install_path)
             if not ok:
                 logger.warning(
                     "PsyNet version detection failed — built-in fallbacks will be used; "
                     "if you see VersionMismatch errors, verify the RL install path in Settings"
                 )
+            refresh_build_secret()
 
         threading.Thread(target=_scan, daemon=True, name="rl-version-scan").start()
 
